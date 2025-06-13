@@ -1,0 +1,77 @@
+@baseUrl = http://localhost:5000
+
+### Add Ticket Types
+POST {{baseUrl}}/api/TicketTypes
+Content-Type: application/json
+
+{
+  "eventId": 1,
+  "type": "Regular",
+  "price": 50.00,
+  "description": "Regular entry ticket"
+}
+
+###
+
+POST {{baseUrl}}/api/TicketTypes
+Content-Type: application/json
+
+{
+  "eventId": 1,
+  "type": "VIP",
+  "price": 100.00,
+  "description": "VIP ticket with special benefits including priority seating"
+}
+
+###
+
+POST {{baseUrl}}/api/TicketTypes
+Content-Type: application/json
+
+{
+  "eventId": 1,
+  "type": "Student",
+  "price": 35.00,
+  "description": "Student discount ticket (valid student ID required)"
+}
+
+### Add Food Items
+POST {{baseUrl}}/api/FoodItems
+Content-Type: application/json
+
+{
+  "eventId": 1,
+  "name": "Sri Lankan Rice & Curry",
+  "price": 18.00,
+  "description": "Traditional Sri Lankan rice with 3 vegetables, dhal curry, and papadam"
+}
+
+###
+
+POST {{baseUrl}}/api/FoodItems
+Content-Type: application/json
+
+{
+  "eventId": 1,
+  "name": "Kottu Roti",
+  "price": 20.00,
+  "description": "Famous Sri Lankan street food made with chopped roti, vegetables, and your choice of chicken or vegetarian"
+}
+
+###
+
+POST {{baseUrl}}/api/FoodItems
+Content-Type: application/json
+
+{
+  "eventId": 1,
+  "name": "String Hoppers Meal",
+  "price": 15.00,
+  "description": "String hoppers served with dhal curry and coconut sambol"
+}
+
+### Get all ticket types for Event 1
+GET {{baseUrl}}/api/TicketTypes/event/1
+
+### Get all food items for Event 1
+GET {{baseUrl}}/api/FoodItems/event/1

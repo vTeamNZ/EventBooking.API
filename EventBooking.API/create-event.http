@@ -1,0 +1,16 @@
+@baseUrl = http://localhost:5000
+
+### Create Event 1 if it doesn't exist
+POST {{baseUrl}}/api/Events
+Content-Type: application/json
+
+{
+  "title": "Sri Lankan Cultural Night 2025",
+  "description": "A night of traditional Sri Lankan music, dance, and cuisine",
+  "date": "2025-07-20T18:00:00",
+  "location": "Auckland Town Hall",
+  "isActive": true,
+  "organizerId": 1,
+  "imageUrl": "events/1.jpg",
+  "capacity": 200
+}
