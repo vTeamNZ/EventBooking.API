@@ -12,6 +12,16 @@ using System.IdentityModel.Tokens.Jwt;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Configure logging
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
+builder.Logging.AddEventLog();
+
+// Add File logging
+var logsPath = Path.Combine(builder.Environment.ContentRootPath, "logs");
+builder.Logging.AddFile(Path.Combine(logsPath, "app-{Date}.log"));
+
 // Add services to the container.
 builder.Services.AddEndpointsApiExplorer();
 
@@ -98,27 +108,49 @@ builder.Services.AddAuthentication(options =>
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"])),        ClockSkew = TimeSpan.Zero    };
 });
 
-// Add CORS for development
+// Configure CORS
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(builder =>
     {
-        builder.WithOrigins("http://localhost:3000")
+        builder.SetIsOriginAllowed(origin => true)
                .AllowAnyMethod()
                .AllowAnyHeader();
     });
 });
 
-
-
 // Add Authorization
 builder.Services.AddAuthorization();
 
-// Configure Logging
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
-
 var app = builder.Build();
+
+// Global error handling
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex)
+    {
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "Unhandled exception occurred while processing request to {Path}", context.Request.Path);
+
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+
+        var error = new
+        {
+            Message = "An error occurred while processing your request.",
+            Details = app.Environment.IsDevelopment() || app.Environment.IsStaging() ? ex.ToString() : null,
+            Path = context.Request.Path,
+            Method = context.Request.Method,
+            Timestamp = DateTime.UtcNow
+        };
+
+        await context.Response.WriteAsJsonAsync(error);
+    }
+});
 
 // Configure the HTTP request pipeline.
 // Enable Swagger regardless of environment
@@ -127,22 +159,56 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+else
+{
+    // In production, use more detailed error handling
+    app.UseExceptionHandler(errorApp =>
+    {
+        errorApp.Run(async context =>
+        {
+            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+            var exceptionHandlerPathFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
+            var exception = exceptionHandlerPathFeature?.Error;
+
+            logger.LogError(exception, "An error occurred while processing request to {Path}", context.Request.Path);
+
+            context.Response.StatusCode = 500;
+            context.Response.ContentType = "application/json";
+
+            var error = new
+            {
+                Message = "An error occurred while processing your request.",
+                Details = app.Environment.IsDevelopment() || app.Environment.IsStaging() ? exception?.ToString() : null,
+                Path = context.Request.Path,
+                Method = context.Request.Method,
+                Timestamp = DateTime.UtcNow
+            };
+
+            await context.Response.WriteAsJsonAsync(error);
+        });
+    });
+}
 
 app.UseHttpsRedirection();
 
-// Serve static files and handle SPA routing
-app.UseDefaultFiles();
+// Enable CORS
+app.UseCors();
+
+// Configure static file serving
+app.UseDefaultFiles(new DefaultFilesOptions
+{
+    DefaultFileNames = new List<string> { "index.html" }
+});
 app.UseStaticFiles();
 
-// Correct middleware order
 app.UseRouting();
-app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// Map controllers
 app.MapControllers();
 
-// Handle SPA routing
+// This needs to come after MapControllers
 app.MapFallbackToFile("index.html");
 
 // Seed the database
