@@ -5,11 +5,11 @@ namespace EventBooking.API.Models
 {
     public class Organizer
     {
-        public int Id { get; set; }
-
-        public string Name { get; set; } = string.Empty;
+        public int Id { get; set; }        public string Name { get; set; } = string.Empty;
         public string ContactEmail { get; set; } = string.Empty;
         public string PhoneNumber { get; set; } = string.Empty;
+        public string? FacebookUrl { get; set; }
+        public string? YoutubeUrl { get; set; }
 
         [Required]
         public string UserId { get; set; } = string.Empty;
