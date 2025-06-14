@@ -60,6 +60,7 @@ namespace EventBooking.API.Controllers
                     Amount = request.Amount, // Amount is already in cents from frontend
                     Currency = request.Currency.ToUpperInvariant(),
                     Description = request.Description,
+                    ReceiptEmail = request.Email, // Add receipt email if provided
                     Metadata = new Dictionary<string, string>
                     {
                         { "eventId", request.EventId.ToString() },
@@ -126,6 +127,30 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error handling webhook");
                 return BadRequest();
+            }
+        }
+
+        [HttpGet("verify-payment/{paymentIntentId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<PaymentStatusResponse>> VerifyPayment(string paymentIntentId)
+        {
+            try
+            {
+                var service = new PaymentIntentService();
+                var paymentIntent = await service.GetAsync(paymentIntentId);
+
+                return Ok(new PaymentStatusResponse
+                {
+                    Status = paymentIntent.Status,
+                    IsSuccessful = paymentIntent.Status == "succeeded",
+                    ReceiptEmail = paymentIntent.ReceiptEmail,
+                    Amount = paymentIntent.Amount
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error verifying payment intent {PaymentIntentId}: {Message}", paymentIntentId, ex.Message);
+                return StatusCode(500, $"Error verifying payment: {ex.Message}");
             }
         }
     }

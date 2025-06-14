@@ -35,9 +35,18 @@ This is a web-based platform for listing and booking events in New Zealand. The 
 - Initiates payment using Stripe API.
 - On success:
   - Booking details (tickets and food) are saved to the database.
-  - Confirmation email is sent (if email support is enabled later).
+  - Confirmation email is sent to the user.
+- On failure:
+  - Error is logged.
+  - Failure notification email is sent to the user.
 
-### 5. Data Storage
+### 5. Email Notifications
+- Email notifications are sent using Stripe's webhook events.
+- Types of emails:
+  - **Success**: Ticket and food summary, total amount, payment reference.
+  - **Failure**: Inform user of the failure with option to retry.
+
+### 6. Data Storage
 - Event, TicketType, FoodItem, and Booking data are persisted in a relational database (e.g., SQL Server).
 - Admin data entry can be done manually via SQL queries.
 
@@ -48,6 +57,7 @@ This is a web-based platform for listing and booking events in New Zealand. The 
 - **Database**: SQL Server Express
 - **Payment**: Stripe API
 - **Hosting**: Azure Windows VM (IIS + SQL Express)
+- **Email Notifications**: Stripe Webhooks + SMTP or SendGrid
 
 ## Entities (Tables)
 
@@ -76,6 +86,8 @@ This is a web-based platform for listing and booking events in New Zealand. The 
 - EventId (FK)
 - CreatedAt
 - TotalAmount
+- PaymentStatus (Pending, Success, Failed)
+- Email
 
 ### BookingTicket
 - Id
