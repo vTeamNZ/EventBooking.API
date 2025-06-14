@@ -21,7 +21,8 @@ builder.Services.AddSwaggerGen(c =>
     c.SwaggerDoc("v1", new OpenApiInfo
     {
         Title = "Event Booking API",
-        Version = "v1"
+        Version = "v1",
+        Description = "API for Event Booking System"
     });
 
     // Add JWT bearer security scheme
@@ -120,11 +121,16 @@ builder.Logging.AddConsole();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+// Enable Swagger regardless of environment
+app.UseSwagger();
+app.UseSwaggerUI(c =>
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Event Booking API V1");
+    c.RoutePrefix = "swagger";
+    c.DocumentTitle = "Event Booking API Documentation";
+    c.EnableDeepLinking();
+    c.DisplayRequestDuration();
+});
 
 // Seed the database
 using (var scope = app.Services.CreateScope())

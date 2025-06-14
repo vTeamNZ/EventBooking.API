@@ -60,12 +60,17 @@ namespace EventBooking.API.Controllers
                     Amount = request.Amount, // Amount is already in cents from frontend
                     Currency = request.Currency.ToUpperInvariant(),
                     Description = request.Description,
-                    ReceiptEmail = request.Email, // Add receipt email if provided
+                    ReceiptEmail = request.Email, // Set receipt email
+                    AutomaticPaymentMethods = new PaymentIntentAutomaticPaymentMethodsOptions
+                    {
+                        Enabled = true,
+                    },
                     Metadata = new Dictionary<string, string>
                     {
                         { "eventId", request.EventId.ToString() },
                         { "eventTitle", request.EventTitle },
-                        { "ticketDetails", request.TicketDetails }
+                        { "ticketDetails", request.TicketDetails },
+                        { "customerEmail", request.Email ?? "" } // Store email in metadata as well
                     }
                 };
 
@@ -75,12 +80,17 @@ namespace EventBooking.API.Controllers
                     options.Metadata.Add("foodDetails", request.FoodDetails);
                 }
 
-                _logger.LogInformation("Creating Stripe payment intent with amount: {Amount} {Currency}", request.Amount, request.Currency.ToUpperInvariant());
+                _logger.LogInformation("Creating Stripe payment intent with amount: {Amount} {Currency}, Email: {Email}", 
+                    request.Amount, 
+                    request.Currency.ToUpperInvariant(),
+                    request.Email);
 
                 var service = new PaymentIntentService();
                 var paymentIntent = await service.CreateAsync(options);
 
-                _logger.LogInformation("Created payment intent: {PaymentIntentId}", paymentIntent.Id);
+                _logger.LogInformation("Created payment intent: {PaymentIntentId} with receipt email: {Email}", 
+                    paymentIntent.Id,
+                    paymentIntent.ReceiptEmail);
 
                 return Ok(new CreatePaymentIntentResponse 
                 { 
