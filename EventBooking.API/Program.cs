@@ -211,22 +211,4 @@ app.MapControllers();
 // This needs to come after MapControllers
 app.MapFallbackToFile("index.html");
 
-// Seed the database
-using (var scope = app.Services.CreateScope())
-{
-    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    try
-    {
-        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        logger.LogInformation("Starting database seeding...");
-        await DatabaseSeeder.SeedTestData(context);
-        logger.LogInformation("Database seeding completed successfully.");
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "An error occurred while seeding the database.");
-        // Don't throw the exception - we want the application to continue running
-    }
-}
-
 app.Run();
