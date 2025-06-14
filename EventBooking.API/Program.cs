@@ -122,15 +122,28 @@ var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 // Enable Swagger regardless of environment
-app.UseSwagger();
-app.UseSwaggerUI(c =>
+if (app.Environment.IsDevelopment())
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "Event Booking API V1");
-    c.RoutePrefix = "swagger";
-    c.DocumentTitle = "Event Booking API Documentation";
-    c.EnableDeepLinking();
-    c.DisplayRequestDuration();
-});
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+
+// Serve static files and handle SPA routing
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+// Correct middleware order
+app.UseRouting();
+app.UseCors();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+
+// Handle SPA routing
+app.MapFallbackToFile("index.html");
 
 // Seed the database
 using (var scope = app.Services.CreateScope())
@@ -149,17 +162,5 @@ using (var scope = app.Services.CreateScope())
         // Don't throw the exception - we want the application to continue running
     }
 }
-
-app.UseHttpsRedirection();
-
-// Correct middleware order
-app.UseRouting();
-app.UseCors();
-app.UseAuthentication();
-app.UseAuthorization();
-
-app.MapControllers();
-
-
 
 app.Run();
