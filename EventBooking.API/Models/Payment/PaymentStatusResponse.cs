@@ -6,5 +6,7 @@ namespace EventBooking.API.Models.Payment
         public bool IsSuccessful { get; set; }
         public string ReceiptEmail { get; set; }
         public long Amount { get; set; }
+        public string BookingReference { get; set; }
+        public int EventId { get; set; }
     }
 }
