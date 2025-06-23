@@ -96,8 +96,7 @@ namespace EventBooking.API.Controllers
                 { 
                     ClientSecret = paymentIntent.ClientSecret,
                 });
-            }            
-            catch (Exception ex)
+            }              catch (Exception ex)
             {
                 var errorMessage = $"Error creating payment intent: {ex.Message}";
                 if (ex.InnerException != null)
@@ -114,29 +113,53 @@ namespace EventBooking.API.Controllers
         public async Task<IActionResult> HandleStripeWebhook()
         {
             var json = await new StreamReader(HttpContext.Request.Body).ReadToEndAsync();
+            _logger.LogInformation("Received webhook from Stripe");
+            
             try
             {
-                var stripeEvent = EventUtility.ConstructEvent(
-                    json,
-                    Request.Headers["Stripe-Signature"],
-                    _configuration["Stripe:WebhookSecret"]
-                );
+                // Try to get the webhook secret
+                var webhookSecret = _configuration["Stripe:WebhookSecret"];
 
-                if (stripeEvent.Type == "payment_intent.succeeded")
+                // If we have a webhook secret, try to construct the event
+                if (!string.IsNullOrEmpty(webhookSecret) && 
+                    Request.Headers.TryGetValue("Stripe-Signature", out var signature))
                 {
-                    var paymentIntent = stripeEvent.Data.Object as PaymentIntent;
-                    _logger.LogInformation("Payment succeeded: {PaymentIntentId}", paymentIntent?.Id);
-                    
-                    // TODO: Update booking status to confirmed
-                    // TODO: Send confirmation email
-                }
+                    try
+                    {
+                        var stripeEvent = EventUtility.ConstructEvent(
+                            json,
+                            signature,
+                            webhookSecret
+                        );
 
-                return Ok();
+                        if (stripeEvent.Type == "payment_intent.succeeded")
+                        {
+                            var paymentIntent = stripeEvent.Data.Object as PaymentIntent;
+                            _logger.LogInformation("Payment succeeded: {PaymentIntentId}", paymentIntent?.Id);
+                            
+                            // TODO: Update booking status to confirmed
+                            // TODO: Send confirmation email
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Log but don't re-throw - we want to acknowledge the webhook
+                        _logger.LogWarning(ex, "Error processing webhook event: {Message}", ex.Message);
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("Acknowledged Stripe webhook ping (no processing)");
+                }
+                
+                // Always acknowledge receipt of the webhook
+                return Ok(new { received = true });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error handling webhook");
-                return BadRequest();
+                // Log the exception but still return 200 OK to prevent Stripe from retrying
+                _logger.LogError(ex, "Error handling Stripe webhook: {Message}", ex.Message);
+                return Ok(new { received = true });
             }
         }
 
