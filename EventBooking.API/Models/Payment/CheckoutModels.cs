@@ -76,5 +76,7 @@ namespace EventBooking.API.Models.Payment
         public bool IsSuccessful { get; set; }
         public string CustomerEmail { get; set; }
         public long? AmountTotal { get; set; }
+        public string PaymentId { get; set; }
+        public string EventTitle { get; set; }
     }
 }

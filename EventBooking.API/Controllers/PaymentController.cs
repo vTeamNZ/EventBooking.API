@@ -245,12 +245,16 @@ namespace EventBooking.API.Controllers
 
                 var options = new SessionCreateOptions
                 {
-                    PaymentMethodTypes = new List<string> { "card" },
+                    PaymentMethodTypes = new List<string> { "card", "afterpay_clearpay"},
                     LineItems = lineItems,
                     Mode = "payment",
                     SuccessUrl = $"{request.SuccessUrl}?session_id={{CHECKOUT_SESSION_ID}}",
                     CancelUrl = request.CancelUrl,
                     CustomerEmail = request.Email,
+                    PaymentIntentData = new SessionPaymentIntentDataOptions
+                    {
+                        Description = $"Tickets for {request.EventTitle} - {request.FirstName}"
+                    },
                     Metadata = new Dictionary<string, string>
                     {
                         { "eventId", request.EventId.ToString() },
@@ -296,13 +300,24 @@ namespace EventBooking.API.Controllers
                 var service = new SessionService();
                 var session = await service.GetAsync(sessionId);
 
+                // Get the payment intent ID associated with this session
+                string paymentIntentId = session.PaymentIntentId;
+                
+                // Get formatted payment ID (shorter version for display)
+                string displayPaymentId = paymentIntentId?.Replace("pi_", "");
+
+                // Extract event title from metadata
+                session.Metadata.TryGetValue("eventTitle", out var eventTitle);
+
                 return Ok(new CheckoutSessionStatusResponse
                 {
                     Status = session.Status,
                     PaymentStatus = session.PaymentStatus,
                     IsSuccessful = session.PaymentStatus == "paid",
                     CustomerEmail = session.CustomerEmail,
-                    AmountTotal = session.AmountTotal
+                    AmountTotal = session.AmountTotal,
+                    PaymentId = displayPaymentId,  // Add the payment ID for display
+                    EventTitle = eventTitle        // Add the event title
                 });
             }
             catch (Exception ex)
