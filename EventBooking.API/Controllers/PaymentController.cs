@@ -245,7 +245,7 @@ namespace EventBooking.API.Controllers
 
                 var options = new SessionCreateOptions
                 {
-                    PaymentMethodTypes = new List<string> { "card", "afterpay_clearpay"},
+                    // Remove PaymentMethodTypes to let Stripe automatically select based on Dashboard settings
                     LineItems = lineItems,
                     Mode = "payment",
                     SuccessUrl = $"{request.SuccessUrl}?session_id={{CHECKOUT_SESSION_ID}}",
