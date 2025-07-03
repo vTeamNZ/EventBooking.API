@@ -32,7 +32,22 @@ namespace EventBooking.API.Controllers
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Event>>> GetEvents()
         {
-            return await _context.Events.ToListAsync();
+            var currentDate = DateTime.UtcNow.Date;
+
+            // Get upcoming events first, sorted by date ascending
+            var upcomingEvents = await _context.Events
+                .Where(e => e.Date.HasValue && e.Date.Value.Date >= currentDate)
+                .OrderBy(e => e.Date)
+                .ToListAsync();
+
+            // Get past events, sorted by date ascending
+            var pastEvents = await _context.Events
+                .Where(e => e.Date.HasValue && e.Date.Value.Date < currentDate)
+                .OrderBy(e => e.Date)
+                .ToListAsync();
+
+            // Concatenate upcoming events followed by past events
+            return upcomingEvents.Concat(pastEvents).ToList();
         }
 
         // GET: api/Events/5
