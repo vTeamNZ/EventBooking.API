@@ -1,6 +1,7 @@
 using EventBooking.API;
 using EventBooking.API.Data;
 using EventBooking.API.Models;
+using EventBooking.API.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -72,6 +73,9 @@ builder.Services.AddControllers()
 // Configure Database
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Add Event Status Service
+builder.Services.AddScoped<IEventStatusService, EventStatusService>();
 
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options => 

@@ -9,6 +9,7 @@ using EventBooking.API.Models.Payment;
 using EventBooking.API.Models.Payments;
 using EventBooking.API.Data;
 using EventBooking.API.DTOs;
+using EventBooking.API.Services; // Add this line
 
 namespace EventBooking.API.Controllers
 {
@@ -19,15 +20,18 @@ namespace EventBooking.API.Controllers
         private readonly IConfiguration _configuration;
         private readonly ILogger<PaymentController> _logger;
         private readonly AppDbContext _context;
+        private readonly IEventStatusService _eventStatusService;
 
         public PaymentController(
             IConfiguration configuration,
             ILogger<PaymentController> logger,
-            AppDbContext context)
+            AppDbContext context,
+            IEventStatusService eventStatusService)
         {
             _configuration = configuration;
             _logger = logger;
             _context = context;
+            _eventStatusService = eventStatusService;
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
         }
 
@@ -197,6 +201,18 @@ namespace EventBooking.API.Controllers
                     return BadRequest("Request cannot be null");
                 }
 
+                // Check if event is still active before creating checkout session
+                var eventItem = await _context.Events.FindAsync(request.EventId);
+                if (eventItem == null)
+                {
+                    return BadRequest("Event not found");
+                }
+
+                if (_eventStatusService.IsEventExpired(eventItem.Date))
+                {
+                    return BadRequest("This event has ended and is no longer available for booking");
+                }
+
                 var lineItems = new List<SessionLineItemOptions>();
 
                 // Add ticket line items
@@ -324,6 +340,35 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error verifying session {SessionId}: {Message}", sessionId, ex.Message);
                 return StatusCode(500, $"Error verifying session: {ex.Message}");
+            }
+        }
+
+        // Add this endpoint to check event status from frontend
+        [HttpGet("check-event-status/{eventId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult> CheckEventStatus(int eventId)
+        {
+            try
+            {
+                var eventItem = await _context.Events.FindAsync(eventId);
+                if (eventItem == null)
+                {
+                    return NotFound("Event not found");
+                }
+
+                return Ok(new 
+                {
+                    EventId = eventId,
+                    IsActive = _eventStatusService.IsEventActive(eventItem.Date),
+                    IsExpired = _eventStatusService.IsEventExpired(eventItem.Date),
+                    EventDate = eventItem.Date,
+                    CurrentNZTime = _eventStatusService.GetCurrentNZTime()
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error checking event status for event {EventId}: {Message}", eventId, ex.Message);
+                return StatusCode(500, $"Error checking event status: {ex.Message}");
             }
         }
     }
