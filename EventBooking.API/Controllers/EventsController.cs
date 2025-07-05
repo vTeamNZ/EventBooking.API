@@ -1,6 +1,7 @@
 ﻿using EventBooking.API.Data;
 using EventBooking.API.DTOs;
 using EventBooking.API.Models;
+using EventBooking.API.Services; // Add this line
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -21,10 +22,12 @@ namespace EventBooking.API.Controllers
     public class EventsController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IEventStatusService _eventStatusService;
 
-        public EventsController(AppDbContext context)
+        public EventsController(AppDbContext context, IEventStatusService eventStatusService)
         {
             _context = context;
+            _eventStatusService = eventStatusService;
         }
 
         // GET: api/Events
@@ -32,7 +35,26 @@ namespace EventBooking.API.Controllers
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Event>>> GetEvents()
         {
-            return await _context.Events.ToListAsync();
+            var currentNZTime = _eventStatusService.GetCurrentNZTime();
+            var currentDate = currentNZTime.Date;
+
+            // Get all events first, then sort them
+            var allEvents = await _context.Events
+                .Where(e => e.Date.HasValue)
+                .OrderBy(e => e.Date)
+                .ToListAsync();
+
+            // Separate and sort using service logic
+            var upcomingEvents = allEvents
+                .Where(e => _eventStatusService.IsEventActive(e.Date))
+                .ToList();
+
+            var pastEvents = allEvents
+                .Where(e => _eventStatusService.IsEventExpired(e.Date))
+                .ToList();
+
+            // Return upcoming events first, then past events
+            return upcomingEvents.Concat(pastEvents).ToList();
         }
 
         // GET: api/Events/5

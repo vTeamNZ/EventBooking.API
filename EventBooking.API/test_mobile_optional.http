@@ -1,0 +1,46 @@
+# Test mobile field is optional
+# Create checkout session without mobile number
+
+POST http://localhost:5000/api/payment/create-checkout-session
+Content-Type: application/json
+
+{
+  "eventId": 1,
+  "eventTitle": "Test Event",
+  "email": "test@example.com",
+  "firstName": "John",
+  "lastName": "Doe",
+  "successUrl": "http://localhost:3000/payment-success",
+  "cancelUrl": "http://localhost:3000/payment-cancel",
+  "ticketDetails": [
+    {
+      "type": "General",
+      "quantity": 1,
+      "unitPrice": 50.00
+    }
+  ]
+}
+
+###
+
+# Test with mobile number provided
+POST http://localhost:5000/api/payment/create-checkout-session
+Content-Type: application/json
+
+{
+  "eventId": 1,
+  "eventTitle": "Test Event",
+  "email": "test@example.com",
+  "firstName": "John",
+  "lastName": "Doe",
+  "mobile": "+64 21 123 4567",
+  "successUrl": "http://localhost:3000/payment-success",
+  "cancelUrl": "http://localhost:3000/payment-cancel",
+  "ticketDetails": [
+    {
+      "type": "General",
+      "quantity": 1,
+      "unitPrice": 50.00
+    }
+  ]
+}

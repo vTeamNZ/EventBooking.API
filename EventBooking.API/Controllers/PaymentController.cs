@@ -3,11 +3,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Stripe;
+using Stripe.Checkout;
 using EventBooking.API.Models;
 using EventBooking.API.Models.Payment;
 using EventBooking.API.Models.Payments;
 using EventBooking.API.Data;
 using EventBooking.API.DTOs;
+using EventBooking.API.Services; // Add this line
 
 namespace EventBooking.API.Controllers
 {
@@ -18,15 +20,18 @@ namespace EventBooking.API.Controllers
         private readonly IConfiguration _configuration;
         private readonly ILogger<PaymentController> _logger;
         private readonly AppDbContext _context;
+        private readonly IEventStatusService _eventStatusService;
 
         public PaymentController(
             IConfiguration configuration,
             ILogger<PaymentController> logger,
-            AppDbContext context)
+            AppDbContext context,
+            IEventStatusService eventStatusService)
         {
             _configuration = configuration;
             _logger = logger;
             _context = context;
+            _eventStatusService = eventStatusService;
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
         }
 
@@ -117,10 +122,8 @@ namespace EventBooking.API.Controllers
             
             try
             {
-                // Try to get the webhook secret
                 var webhookSecret = _configuration["Stripe:WebhookSecret"];
 
-                // If we have a webhook secret, try to construct the event
                 if (!string.IsNullOrEmpty(webhookSecret) && 
                     Request.Headers.TryGetValue("Stripe-Signature", out var signature))
                 {
@@ -132,10 +135,10 @@ namespace EventBooking.API.Controllers
                             webhookSecret
                         );
 
-                        if (stripeEvent.Type == "payment_intent.succeeded")
+                        if (stripeEvent.Type == "checkout.session.completed")
                         {
-                            var paymentIntent = stripeEvent.Data.Object as PaymentIntent;
-                            _logger.LogInformation("Payment succeeded: {PaymentIntentId}", paymentIntent?.Id);
+                            var session = stripeEvent.Data.Object as Session;
+                            _logger.LogInformation("Checkout session completed: {SessionId}", session?.Id);
                             
                             // TODO: Update booking status to confirmed
                             // TODO: Send confirmation email
@@ -143,7 +146,6 @@ namespace EventBooking.API.Controllers
                     }
                     catch (Exception ex)
                     {
-                        // Log but don't re-throw - we want to acknowledge the webhook
                         _logger.LogWarning(ex, "Error processing webhook event: {Message}", ex.Message);
                     }
                 }
@@ -152,12 +154,10 @@ namespace EventBooking.API.Controllers
                     _logger.LogInformation("Acknowledged Stripe webhook ping (no processing)");
                 }
                 
-                // Always acknowledge receipt of the webhook
                 return Ok(new { received = true });
             }
             catch (Exception ex)
             {
-                // Log the exception but still return 200 OK to prevent Stripe from retrying
                 _logger.LogError(ex, "Error handling Stripe webhook: {Message}", ex.Message);
                 return Ok(new { received = true });
             }
@@ -184,6 +184,191 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error verifying payment intent {PaymentIntentId}: {Message}", paymentIntentId, ex.Message);
                 return StatusCode(500, $"Error verifying payment: {ex.Message}");
+            }
+        }
+
+        [HttpPost("create-checkout-session")]
+        [AllowAnonymous]
+        public async Task<ActionResult<CreateCheckoutSessionResponse>> CreateCheckoutSession(
+            [FromBody] CreateCheckoutSessionRequest request)
+        {
+            try
+            {
+                _logger.LogInformation("Received checkout session request: {@Request}", request);
+
+                if (request == null)
+                {
+                    return BadRequest("Request cannot be null");
+                }
+
+                // Check if event is still active before creating checkout session
+                var eventItem = await _context.Events.FindAsync(request.EventId);
+                if (eventItem == null)
+                {
+                    return BadRequest("Event not found");
+                }
+
+                if (_eventStatusService.IsEventExpired(eventItem.Date))
+                {
+                    return BadRequest("This event has ended and is no longer available for booking");
+                }
+
+                var lineItems = new List<SessionLineItemOptions>();
+
+                // Add ticket line items
+                if (request.TicketDetails != null && request.TicketDetails.Any())
+                {
+                    foreach (var ticket in request.TicketDetails)
+                    {
+                        lineItems.Add(new SessionLineItemOptions
+                        {
+                            PriceData = new SessionLineItemPriceDataOptions
+                            {
+                                UnitAmount = (long)(ticket.UnitPrice * 100), // Convert to cents
+                                Currency = "nzd",
+                                ProductData = new SessionLineItemPriceDataProductDataOptions
+                                {
+                                    Name = $"{ticket.Type} Ticket - {request.EventTitle}",
+                                    Description = $"{ticket.Type} ticket for {request.EventTitle}",
+                                }
+                            },
+                            Quantity = ticket.Quantity,
+                        });
+                    }
+                }
+
+                // Add food line items
+                if (request.FoodDetails != null && request.FoodDetails.Any())
+                {
+                    foreach (var food in request.FoodDetails)
+                    {
+                        lineItems.Add(new SessionLineItemOptions
+                        {
+                            PriceData = new SessionLineItemPriceDataOptions
+                            {
+                                UnitAmount = (long)(food.UnitPrice * 100), // Convert to cents
+                                Currency = "nzd",
+                                ProductData = new SessionLineItemPriceDataProductDataOptions
+                                {
+                                    Name = food.Name,
+                                    Description = $"Food item for {request.EventTitle}",
+                                }
+                            },
+                            Quantity = food.Quantity,
+                        });
+                    }
+                }
+
+                var options = new SessionCreateOptions
+                {
+                    // Remove PaymentMethodTypes to let Stripe automatically select based on Dashboard settings
+                    LineItems = lineItems,
+                    Mode = "payment",
+                    SuccessUrl = $"{request.SuccessUrl}?session_id={{CHECKOUT_SESSION_ID}}",
+                    CancelUrl = request.CancelUrl,
+                    CustomerEmail = request.Email,
+                    PaymentIntentData = new SessionPaymentIntentDataOptions
+                    {
+                        Description = $"Tickets for {request.EventTitle} - {request.FirstName}"
+                    },
+                    Metadata = new Dictionary<string, string>
+                    {
+                        { "eventId", request.EventId.ToString() },
+                        { "eventTitle", request.EventTitle },
+                        { "ticketDetails", System.Text.Json.JsonSerializer.Serialize(request.TicketDetails) },
+                        { "foodDetails", request.FoodDetails != null ? System.Text.Json.JsonSerializer.Serialize(request.FoodDetails) : "" },
+                        { "customerFirstName", request.FirstName ?? "" },
+                        { "customerLastName", request.LastName ?? "" },
+                        { "customerMobile", request.Mobile ?? "" }
+                    }
+                };
+
+                var service = new SessionService();
+                var session = await service.CreateAsync(options);
+
+                _logger.LogInformation("Created checkout session: {SessionId} for event: {EventId}", 
+                    session.Id, request.EventId);
+
+                return Ok(new CreateCheckoutSessionResponse 
+                { 
+                    SessionId = session.Id,
+                    Url = session.Url
+                });
+            }
+            catch (Exception ex)
+            {
+                var errorMessage = $"Error creating checkout session: {ex.Message}";
+                if (ex.InnerException != null)
+                {
+                    errorMessage += $" Inner exception: {ex.InnerException.Message}";
+                }
+                _logger.LogError(ex, errorMessage);
+                return StatusCode(500, errorMessage);
+            }
+        }
+
+        [HttpGet("verify-session/{sessionId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<CheckoutSessionStatusResponse>> VerifySession(string sessionId)
+        {
+            try
+            {
+                var service = new SessionService();
+                var session = await service.GetAsync(sessionId);
+
+                // Get the payment intent ID associated with this session
+                string paymentIntentId = session.PaymentIntentId;
+                
+                // Get formatted payment ID (shorter version for display)
+                string displayPaymentId = paymentIntentId?.Replace("pi_", "");
+
+                // Extract event title from metadata
+                session.Metadata.TryGetValue("eventTitle", out var eventTitle);
+
+                return Ok(new CheckoutSessionStatusResponse
+                {
+                    Status = session.Status,
+                    PaymentStatus = session.PaymentStatus,
+                    IsSuccessful = session.PaymentStatus == "paid",
+                    CustomerEmail = session.CustomerEmail,
+                    AmountTotal = session.AmountTotal,
+                    PaymentId = displayPaymentId,  // Add the payment ID for display
+                    EventTitle = eventTitle        // Add the event title
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error verifying session {SessionId}: {Message}", sessionId, ex.Message);
+                return StatusCode(500, $"Error verifying session: {ex.Message}");
+            }
+        }
+
+        // Add this endpoint to check event status from frontend
+        [HttpGet("check-event-status/{eventId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult> CheckEventStatus(int eventId)
+        {
+            try
+            {
+                var eventItem = await _context.Events.FindAsync(eventId);
+                if (eventItem == null)
+                {
+                    return NotFound("Event not found");
+                }
+
+                return Ok(new 
+                {
+                    EventId = eventId,
+                    IsActive = _eventStatusService.IsEventActive(eventItem.Date),
+                    IsExpired = _eventStatusService.IsEventExpired(eventItem.Date),
+                    EventDate = eventItem.Date,
+                    CurrentNZTime = _eventStatusService.GetCurrentNZTime()
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error checking event status for event {EventId}: {Message}", eventId, ex.Message);
+                return StatusCode(500, $"Error checking event status: {ex.Message}");
             }
         }
     }
