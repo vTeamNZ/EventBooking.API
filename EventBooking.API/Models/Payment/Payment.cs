@@ -54,6 +54,6 @@ namespace EventBooking.API.Models.Payments
 
         [StringLength(50)]
         [Phone]
-        public string Mobile { get; set; } = string.Empty;
+        public string? Mobile { get; set; }
     }
 }

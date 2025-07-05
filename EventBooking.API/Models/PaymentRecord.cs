@@ -21,8 +21,7 @@ namespace EventBooking.API.Models
         [EmailAddress]
         public string Email { get; set; }
         
-        [Required]
-        public string Mobile { get; set; }
+        public string? Mobile { get; set; }
 
         public int EventId { get; set; }
         public string EventTitle { get; set; }
