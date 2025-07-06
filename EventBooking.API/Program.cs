@@ -77,6 +77,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // Add Event Status Service
 builder.Services.AddScoped<IEventStatusService, EventStatusService>();
 
+// Add Image Service
+builder.Services.AddScoped<IImageService, ImageService>();
+
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options => 
 {
@@ -100,16 +103,42 @@ builder.Services.AddAuthentication(options =>
 {
     options.SaveToken = true;
     options.RequireHttpsMetadata = false;
+    
+    options.Events = new JwtBearerEvents
+    {
+        OnAuthenticationFailed = context =>
+        {
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            logger.LogError("Authentication failed: {Message}", context.Exception.Message);
+            
+            if (context.Exception is SecurityTokenMalformedException)
+            {
+                logger.LogError("Malformed JWT token received: {Token}", context.Request.Headers.Authorization.FirstOrDefault());
+            }
+            
+            return Task.CompletedTask;
+        },
+        OnTokenValidated = context =>
+        {
+            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
+            logger.LogInformation("Token validated successfully for user: {UserId}", 
+                context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value);
+            return Task.CompletedTask;
+        }
+    };
+    
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuer = true,
         ValidateAudience = true,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        ValidIssuer = builder.Configuration["Jwt:Issuer"],
-        ValidAudience = builder.Configuration["Jwt:Audience"],
+        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "http://localhost:5290",
+        ValidAudience = builder.Configuration["Jwt:Audience"] ?? "http://localhost:3000",
         IssuerSigningKey = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"])),        ClockSkew = TimeSpan.Zero    };
+            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? "ThisIsASuperUltraSecretJWTKeyWithMinimum32Bytes")),
+        ClockSkew = TimeSpan.Zero
+    };
 });
 
 // Configure CORS
@@ -156,63 +185,96 @@ app.Use(async (context, next) =>
     }
 });
 
-// Configure the HTTP request pipeline.
-// Enable Swagger regardless of environment
-if (app.Environment.IsDevelopment())
+// Add custom middleware to handle JWT token issues
+app.Use(async (context, next) =>
+{
+    try
+    {
+        // Check if there's an Authorization header
+        var authHeader = context.Request.Headers.Authorization.FirstOrDefault();
+        
+        if (!string.IsNullOrEmpty(authHeader) && authHeader.StartsWith("Bearer "))
+        {
+            var token = authHeader.Substring("Bearer ".Length).Trim();
+            
+            // Basic validation to check if the token has the correct format
+            if (!string.IsNullOrEmpty(token) && !token.Contains('.'))
+            {
+                var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+                logger.LogWarning("Malformed JWT token received - missing dots: {Token}", token);
+                
+                // Remove the malformed token to prevent authentication errors
+                context.Request.Headers.Remove("Authorization");
+                
+                // Continue without the invalid token - this will result in a 401 for protected endpoints
+                await next();
+                return;
+            }
+            
+            // Additional validation for minimum token structure
+            if (!string.IsNullOrEmpty(token))
+            {
+                var parts = token.Split('.');
+                if (parts.Length != 3)
+                {
+                    var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+                    logger.LogWarning("Malformed JWT token received - incorrect number of parts: {PartsCount}, Token: {Token}", 
+                        parts.Length, token);
+                    
+                    // Remove the malformed token
+                    context.Request.Headers.Remove("Authorization");
+                }
+            }
+        }
+        
+        await next();
+    }
+    catch (Exception ex)
+    {
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "Error in JWT preprocessing middleware");
+        await next();
+    }
+});
+
+// Configure the HTTP request pipeline
+if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
 {
     app.UseSwagger();
-    app.UseSwaggerUI();
-}
-else
-{
-    // In production, use more detailed error handling
-    app.UseExceptionHandler(errorApp =>
+    app.UseSwaggerUI(c =>
     {
-        errorApp.Run(async context =>
-        {
-            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-            var exceptionHandlerPathFeature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerPathFeature>();
-            var exception = exceptionHandlerPathFeature?.Error;
-
-            logger.LogError(exception, "An error occurred while processing request to {Path}", context.Request.Path);
-
-            context.Response.StatusCode = 500;
-            context.Response.ContentType = "application/json";
-
-            var error = new
-            {
-                Message = "An error occurred while processing your request.",
-                Details = app.Environment.IsDevelopment() || app.Environment.IsStaging() ? exception?.ToString() : null,
-                Path = context.Request.Path,
-                Method = context.Request.Method,
-                Timestamp = DateTime.UtcNow
-            };
-
-            await context.Response.WriteAsJsonAsync(error);
-        });
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "Event Booking API v1");
+        c.RoutePrefix = string.Empty; // Set Swagger UI at the app's root
     });
 }
 
-app.UseHttpsRedirection();
-
-// Enable CORS
-app.UseCors();
-
-// Configure static file serving
-app.UseDefaultFiles(new DefaultFilesOptions
-{
-    DefaultFileNames = new List<string> { "index.html" }
-});
 app.UseStaticFiles();
 
-app.UseRouting();
+app.UseCors();
+
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Map controllers
 app.MapControllers();
 
-// This needs to come after MapControllers
-app.MapFallbackToFile("index.html");
+// Seed the database
+using (var scope = app.Services.CreateScope())
+{
+    var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+    
+    // Ensure database is created
+    context.Database.EnsureCreated();
+    
+    // Seed roles
+    await IdentitySeeder.SeedRolesAsync(roleManager);
+    
+    // Seed admin user
+    await IdentitySeeder.SeedAdminUserAsync(userManager);
+    
+    // Seed test data
+    await DatabaseSeeder.SeedTestData(context);
+}
 
 app.Run();

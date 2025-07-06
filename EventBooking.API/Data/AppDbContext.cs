@@ -26,6 +26,10 @@ namespace EventBooking.API.Data
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<BookingTicket> BookingTickets { get; set; }
         public DbSet<BookingFood> BookingFoods { get; set; }
+        
+        // New entities for seat selection
+        public DbSet<Venue> Venues { get; set; }
+        public DbSet<Section> Sections { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -47,6 +51,69 @@ namespace EventBooking.API.Data
                 .WithMany()
                 .HasForeignKey(b => b.EventId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            // Configure Venue relationships
+            modelBuilder.Entity<Event>()
+                .HasOne(e => e.Venue)
+                .WithMany(v => v.Events)
+                .HasForeignKey(e => e.VenueId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // Configure Section relationships
+            modelBuilder.Entity<Section>()
+                .HasOne(s => s.Venue)
+                .WithMany(v => v.Sections)
+                .HasForeignKey(s => s.VenueId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Configure Seat relationships
+            modelBuilder.Entity<Seat>()
+                .HasOne(s => s.Event)
+                .WithMany(e => e.Seats)
+                .HasForeignKey(s => s.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<Seat>()
+                .HasOne(s => s.Section)
+                .WithMany(sec => sec.Seats)
+                .HasForeignKey(s => s.SectionId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            modelBuilder.Entity<Seat>()
+                .HasOne(s => s.Table)
+                .WithMany(t => t.Seats)
+                .HasForeignKey(s => s.TableId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            // Configure Table relationships
+            modelBuilder.Entity<Table>()
+                .HasOne(t => t.Event)
+                .WithMany(e => e.Tables)
+                .HasForeignKey(t => t.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<Table>()
+                .HasOne(t => t.Section)
+                .WithMany(s => s.Tables)
+                .HasForeignKey(t => t.SectionId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // Configure decimal precision
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.Price)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.PricePerSeat)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.TablePrice)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Section>()
+                .Property(s => s.BasePrice)
+                .HasPrecision(18, 2);
 
             modelBuilder.Entity<BookingTicket>()
                 .HasOne(bt => bt.Booking)

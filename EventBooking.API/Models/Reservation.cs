@@ -19,5 +19,7 @@ namespace EventBooking.API.Models
 
         public bool IsReserved { get; set; } = true;
         public DateTime ReservedAt { get; set; } = DateTime.UtcNow;
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime? ExpiresAt { get; set; }
     }
 }

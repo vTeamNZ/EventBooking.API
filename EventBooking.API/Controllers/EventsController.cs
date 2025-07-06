@@ -15,19 +15,21 @@ using System.Threading.Tasks;
 namespace EventBooking.API.Controllers
 {
     //[Authorize(Roles = "Admin,Organizer")]
-    //[AllowAnonymous]
-    [Authorize]
+    [AllowAnonymous]
+    //[Authorize]
     [Route("api/[controller]")]
     [ApiController]
     public class EventsController : ControllerBase
     {
         private readonly AppDbContext _context;
         private readonly IEventStatusService _eventStatusService;
+        private readonly IImageService _imageService;
 
-        public EventsController(AppDbContext context, IEventStatusService eventStatusService)
+        public EventsController(AppDbContext context, IEventStatusService eventStatusService, IImageService imageService)
         {
             _context = context;
             _eventStatusService = eventStatusService;
+            _imageService = imageService;
         }
 
         // GET: api/Events
@@ -72,31 +74,90 @@ namespace EventBooking.API.Controllers
             return @event;
         }
 
-        [AllowAnonymous]
+        [Authorize(Roles = "Organizer")]
         [HttpPost]
-        public async Task<IActionResult> CreateEvent(EventCreateDTO dto)
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> CreateEvent([FromForm] EventCreateDTO dto)
         {
-            // For demo/testing purposes, assign a static organizerId
-            var defaultOrganizer = await _context.Organizers.FirstOrDefaultAsync();
-            if (defaultOrganizer == null)
-                return BadRequest("No organizer available. Please create one first.");
+            // Log the incoming request
+            var logger = HttpContext.RequestServices.GetRequiredService<ILogger<EventsController>>();
+            logger.LogInformation("CreateEvent called with data: {@EventCreateDTO}", dto);
 
-            var newEvent = new Event
+            // Check model validation
+            if (!ModelState.IsValid)
             {
-                Title = dto.Title,
-                Description = dto.Description,
-                Date = dto.Date,
-                Location = dto.Location,
-                Price = dto.Price,
-                Capacity = dto.Capacity,
-                OrganizerId = defaultOrganizer.Id,
-                ImageUrl = dto.imageUrl
-            };
+                logger.LogWarning("CreateEvent validation failed. Errors: {@ValidationErrors}", 
+                    ModelState.Where(x => x.Value?.Errors.Count > 0)
+                             .ToDictionary(kvp => kvp.Key, kvp => kvp.Value?.Errors.Select(e => e.ErrorMessage)));
+                
+                return BadRequest(ModelState);
+            }
 
-            _context.Events.Add(newEvent);
-            await _context.SaveChangesAsync();
+            // Get the current user's organizer ID
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId == null)
+            {
+                logger.LogWarning("CreateEvent: User not authenticated");
+                return Unauthorized();
+            }
 
-            return Ok(newEvent);
+            var organizer = await _context.Organizers
+                .FirstOrDefaultAsync(o => o.UserId == userId);
+            
+            if (organizer == null)
+            {
+                logger.LogWarning("CreateEvent: Organizer profile not found for user {UserId}", userId);
+                return BadRequest("Organizer profile not found. Please contact support.");
+            }
+
+            try
+            {
+                string? imageUrl = null;
+                
+                // Handle image upload
+                if (dto.Image != null && dto.Image.Length > 0)
+                {
+                    imageUrl = await _imageService.SaveImageAsync(dto.Image);
+                    logger.LogInformation("Image uploaded successfully for event: {ImageUrl}", imageUrl);
+                }
+
+                var newEvent = new Event
+                {
+                    Title = dto.Title,
+                    Description = dto.Description,
+                    Date = dto.Date,
+                    Location = dto.Location,
+                    Price = dto.Price,
+                    Capacity = dto.Capacity,
+                    OrganizerId = organizer.Id,
+                    ImageUrl = imageUrl,
+                    SeatSelectionMode = dto.SeatSelectionMode,
+                    StagePosition = dto.StagePosition,
+                    IsActive = false // Events are inactive by default until approved by admin
+                };
+
+                _context.Events.Add(newEvent);
+                await _context.SaveChangesAsync();
+
+                logger.LogInformation("Event created successfully with ID {EventId} by organizer {OrganizerId}", 
+                    newEvent.Id, organizer.Id);
+
+                return Ok(new { 
+                    id = newEvent.Id,
+                    message = "Event created successfully. It will be visible after admin approval.",
+                    eventData = newEvent 
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                logger.LogWarning("Validation error creating event: {Message}", ex.Message);
+                return BadRequest(ex.Message);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Error creating event for organizer {OrganizerId}", organizer.Id);
+                return StatusCode(500, "An error occurred while creating the event");
+            }
         }
 
         // PUT: api/Events/5
@@ -152,6 +213,12 @@ namespace EventBooking.API.Controllers
             if (@event == null)
             {
                 return NotFound();
+            }
+
+            // Delete associated image if it exists
+            if (!string.IsNullOrEmpty(@event.ImageUrl))
+            {
+                await _imageService.DeleteImageAsync(@event.ImageUrl);
             }
 
             _context.Events.Remove(@event);

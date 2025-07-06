@@ -28,18 +28,36 @@ namespace EventBooking.API.Controllers
         [AllowAnonymous]
         //[Authorize(Roles = "Admin,Organizer")]
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<Organizer>>> GetOrganizers()
+        public async Task<ActionResult<IEnumerable<object>>> GetOrganizers()
         {
             Console.WriteLine("Organizer API hit.");
             var list = await _context.Organizers.Include(o => o.User).ToListAsync();
             Console.WriteLine($"Found {list.Count} organizers.");
-            return list;
+            
+            // Transform the list to avoid circular reference issues
+            var result = list.Select(organizer => new
+            {
+                organizer.Id,
+                organizer.Name,
+                organizer.ContactEmail,
+                organizer.PhoneNumber,
+                organizer.OrganizationName,
+                organizer.Website,
+                organizer.FacebookUrl,
+                organizer.YoutubeUrl,
+                organizer.IsVerified,
+                organizer.CreatedAt,
+                UserName = organizer.User?.UserName,
+                FullName = organizer.User?.FullName
+            });
+            
+            return Ok(result);
         }
 
         // GET: api/Organizers/5
         [AllowAnonymous]
         [HttpGet("{id}")]
-        public async Task<ActionResult<Organizer>> GetOrganizer(int id)
+        public async Task<ActionResult<object>> GetOrganizer(int id)
         {
             var organizer = await _context.Organizers
                                           .Include(o => o.User)
@@ -50,7 +68,22 @@ namespace EventBooking.API.Controllers
                 return NotFound();
             }
 
-            return organizer;
+            // Return an anonymous object with only the needed properties to avoid circular reference issues
+            return new
+            {
+                organizer.Id,
+                organizer.Name,
+                organizer.ContactEmail,
+                organizer.PhoneNumber,
+                organizer.OrganizationName,
+                organizer.Website,
+                organizer.FacebookUrl,
+                organizer.YoutubeUrl,
+                organizer.IsVerified,
+                organizer.CreatedAt,
+                UserName = organizer.User?.UserName,
+                FullName = organizer.User?.FullName
+            };
         }
 
         // PUT: api/Organizers/5

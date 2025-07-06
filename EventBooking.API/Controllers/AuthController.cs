@@ -35,9 +35,45 @@ namespace EventBooking.API.Controllers
             _context = context ?? throw new ArgumentNullException(nameof(context));
         }
 
+        [HttpPost("create-admin")]
+        public async Task<IActionResult> CreateAdmin([FromBody] RegisterDTO dto)
+        {
+            // Check if an admin user already exists
+            var existingAdmin = await _userManager.GetUsersInRoleAsync("Admin");
+            if (existingAdmin.Any())
+            {
+                return BadRequest("Admin user already exists");
+            }
+
+            var user = new ApplicationUser
+            {
+                FullName = dto.FullName,
+                Email = dto.Email,
+                UserName = dto.Email,
+                Role = "Admin"
+            };
+
+            var result = await _userManager.CreateAsync(user, dto.Password);
+
+            if (!result.Succeeded)
+                return BadRequest(result.Errors);
+
+            await _userManager.AddToRoleAsync(user, "Admin");
+
+            return Ok("Admin user created successfully");
+        }
+
         [HttpPost("register")]
         public async Task<IActionResult> Register(RegisterDTO dto)
         {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            // Check if user already exists
+            var existingUser = await _userManager.FindByEmailAsync(dto.Email);
+            if (existingUser != null)
+                return BadRequest("User with this email already exists");
+
             var user = new ApplicationUser
             {
                 FullName = dto.FullName,
@@ -57,7 +93,9 @@ namespace EventBooking.API.Controllers
                 {
                     Name = user.FullName,
                     ContactEmail = user.Email,
-                    PhoneNumber = "", // Optional
+                    PhoneNumber = dto.PhoneNumber ?? "",
+                    OrganizationName = dto.OrganizationName,
+                    Website = dto.Website,
                     UserId = user.Id
                 };
 
@@ -67,11 +105,15 @@ namespace EventBooking.API.Controllers
 
             await _userManager.AddToRoleAsync(user, dto.Role);
 
-            return Ok("User registered successfully");
+            return Ok(new { 
+                message = "User registered successfully",
+                userId = user.Id,
+                role = dto.Role
+            });
         }
 
         [HttpPost("login")]
-        public async Task<IActionResult> Login([FromBody] LoginModel model)
+        public async Task<IActionResult> Login([FromBody] LoginDTO model)
         {
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
@@ -86,10 +128,10 @@ namespace EventBooking.API.Controllers
             var authClaims = new List<Claim>
             {
                 new Claim(ClaimTypes.NameIdentifier, user.Id),
-                new Claim(ClaimTypes.Name, user.UserName),
-                new Claim(ClaimTypes.Email, user.Email),
+                new Claim(ClaimTypes.Name, user.UserName ?? string.Empty),
+                new Claim(ClaimTypes.Email, user.Email ?? string.Empty),
                 new Claim(JwtRegisteredClaimNames.Sub, user.Id),
-                new Claim(JwtRegisteredClaimNames.Email, user.Email),
+                new Claim(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             };
 
@@ -139,6 +181,83 @@ namespace EventBooking.API.Controllers
             );
 
             return token;
+        }
+
+        [HttpGet("me")]
+        [Authorize]
+        public async Task<IActionResult> GetCurrentUser()
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId == null)
+                return Unauthorized();
+
+            var user = await _userManager.FindByIdAsync(userId);
+            if (user == null)
+                return NotFound("User not found");
+
+            var userRoles = await _userManager.GetRolesAsync(user);
+
+            var response = new
+            {
+                id = user.Id,
+                email = user.Email,
+                fullName = user.FullName,
+                role = user.Role,
+                roles = userRoles
+            };
+
+            // If user is an organizer, include organizer details
+            if (user.Role == "Organizer")
+            {
+                var organizer = await _context.Organizers
+                    .FirstOrDefaultAsync(o => o.UserId == user.Id);
+
+                if (organizer != null)
+                {
+                    return Ok(new
+                    {
+                        user = response,
+                        organizer = new
+                        {
+                            id = organizer.Id,
+                            name = organizer.Name,
+                            organizationName = organizer.OrganizationName,
+                            phoneNumber = organizer.PhoneNumber,
+                            website = organizer.Website,
+                            isVerified = organizer.IsVerified,
+                            createdAt = organizer.CreatedAt
+                        }
+                    });
+                }
+            }
+
+            return Ok(new { user = response });
+        }
+
+        [HttpPut("organizer/profile")]
+        [Authorize(Roles = "Organizer")]
+        public async Task<IActionResult> UpdateOrganizerProfile([FromBody] UpdateOrganizerProfileDTO dto)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId == null)
+                return Unauthorized();
+
+            var organizer = await _context.Organizers
+                .FirstOrDefaultAsync(o => o.UserId == userId);
+
+            if (organizer == null)
+                return NotFound("Organizer profile not found");
+
+            organizer.Name = dto.Name ?? organizer.Name;
+            organizer.OrganizationName = dto.OrganizationName ?? organizer.OrganizationName;
+            organizer.PhoneNumber = dto.PhoneNumber ?? organizer.PhoneNumber;
+            organizer.Website = dto.Website ?? organizer.Website;
+            organizer.FacebookUrl = dto.FacebookUrl ?? organizer.FacebookUrl;
+            organizer.YoutubeUrl = dto.YoutubeUrl ?? organizer.YoutubeUrl;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Profile updated successfully" });
         }
     }
 }

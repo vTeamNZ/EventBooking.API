@@ -11,8 +11,8 @@ using System.Threading.Tasks;
 
 namespace EventBooking.API.Controllers
 {
-    [Authorize(Roles = "Admin,Attendee")]
-    //[AllowAnonymous]
+    //[Authorize(Roles = "Admin,Attendee")]
+    [AllowAnonymous]
     [Route("api/[controller]")]
     [ApiController]
     public class TableReservationsController : ControllerBase
