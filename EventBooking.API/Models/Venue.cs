@@ -35,7 +35,6 @@ namespace EventBooking.API.Models
         
         // Navigation properties
         public ICollection<Event> Events { get; set; } = new List<Event>();
-        public ICollection<Section> Sections { get; set; } = new List<Section>();
 
         // Computed total capacity
         public int Capacity => NumberOfRows * SeatsPerRow;

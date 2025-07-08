@@ -307,7 +307,7 @@ namespace EventBooking.API.Controllers
         }
 
         // POST: api/Events/seed-test-data
-        [AllowAnonymous]
+        /*[AllowAnonymous]
         [HttpPost("seed-test-data")]
         public async Task<IActionResult> SeedTestData()
         {
@@ -411,7 +411,7 @@ namespace EventBooking.API.Controllers
             {
                 return StatusCode(500, $"Error seeding test data: {ex.Message}");
             }
-        }
+        }*/
         
         private bool EventExists(int id)
         {

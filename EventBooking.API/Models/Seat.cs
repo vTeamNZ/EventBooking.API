@@ -32,9 +32,9 @@
         public DateTime? ReservedUntil { get; set; }
         public string? ReservedBy { get; set; } // Session ID or User ID
 
-        // Section relationship (for event hall mode)
-        public int? SectionId { get; set; }
-        public Section? Section { get; set; }
+        // TicketType relationship (replaces Section)
+        public int? TicketTypeId { get; set; }
+        public TicketType? TicketType { get; set; }
 
         // Table relationship (for table seating mode)
         public int? TableId { get; set; }

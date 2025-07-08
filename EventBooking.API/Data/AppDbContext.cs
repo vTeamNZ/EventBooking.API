@@ -27,10 +27,7 @@ namespace EventBooking.API.Data
         public DbSet<BookingTicket> BookingTickets { get; set; }
         public DbSet<BookingFood> BookingFoods { get; set; }
         public DbSet<SeatReservation> SeatReservations { get; set; }
-        
-        // New entities for seat selection
         public DbSet<Venue> Venues { get; set; }
-        public DbSet<Section> Sections { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -60,26 +57,48 @@ namespace EventBooking.API.Data
                 .HasForeignKey(e => e.VenueId)
                 .OnDelete(DeleteBehavior.SetNull);
 
-            // Configure Section relationships
-            modelBuilder.Entity<Section>()
-                .HasOne(s => s.Venue)
-                .WithMany(v => v.Sections)
-                .HasForeignKey(s => s.VenueId)
-                .OnDelete(DeleteBehavior.Cascade);
+            // Configure TicketType relationships
+            modelBuilder.Entity<TicketType>(entity =>
+            {
+                entity.Property(t => t.Color)
+                    .HasMaxLength(7)
+                    .HasDefaultValue("#007bff");
 
-            // Configure Seat relationships
-            modelBuilder.Entity<Seat>()
-                .HasOne(s => s.Event)
-                .WithMany(e => e.Seats)
-                .HasForeignKey(s => s.EventId)
-                .OnDelete(DeleteBehavior.Cascade);
+                entity.Property(t => t.Name)
+                    .HasMaxLength(100)
+                    .IsRequired();
 
-            modelBuilder.Entity<Seat>()
-                .HasOne(s => s.Section)
-                .WithMany(sec => sec.Seats)
-                .HasForeignKey(s => s.SectionId)
-                .OnDelete(DeleteBehavior.SetNull);
+                entity.Property(t => t.Type)
+                    .HasMaxLength(50)
+                    .IsRequired();
 
+                entity.Property(t => t.Price)
+                    .HasPrecision(18, 2);
+
+                entity.HasOne(tt => tt.Event)
+                    .WithMany(e => e.TicketTypes)
+                    .HasForeignKey(tt => tt.EventId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });            // Configure Seat relationships
+            modelBuilder.Entity<Seat>(entity =>
+            {
+                entity.Property(s => s.Row)
+                    .HasMaxLength(10)
+                    .IsRequired();
+                entity.Property(s => s.SeatNumber)
+                    .HasMaxLength(20)
+                    .IsRequired();
+                entity.HasOne(s => s.Event)
+                    .WithMany(e => e.Seats)
+                    .HasForeignKey(s => s.EventId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(s => s.TicketType)
+                    .WithMany(tt => tt.Seats)
+                    .HasForeignKey(s => s.TicketTypeId)
+                    .OnDelete(DeleteBehavior.Restrict)
+                    .IsRequired();
+            });
+            
             modelBuilder.Entity<Seat>()
                 .HasOne(s => s.Table)
                 .WithMany(t => t.Seats)
@@ -92,12 +111,6 @@ namespace EventBooking.API.Data
                 .WithMany(e => e.Tables)
                 .HasForeignKey(t => t.EventId)
                 .OnDelete(DeleteBehavior.Cascade);
-
-            modelBuilder.Entity<Table>()
-                .HasOne(t => t.Section)
-                .WithMany(s => s.Tables)
-                .HasForeignKey(t => t.SectionId)
-                .OnDelete(DeleteBehavior.SetNull);
 
             // Configure decimal precision
             modelBuilder.Entity<Event>()
@@ -150,14 +163,8 @@ namespace EventBooking.API.Data
 
             modelBuilder.Entity<Table>()
                 .Property(t => t.PricePerSeat)
-                .HasPrecision(18, 2);
-
-            modelBuilder.Entity<Table>()
+                .HasPrecision(18, 2);            modelBuilder.Entity<Table>()
                 .Property(t => t.TablePrice)
-                .HasPrecision(18, 2);
-
-            modelBuilder.Entity<Section>()
-                .Property(s => s.BasePrice)
                 .HasPrecision(18, 2);
 
             modelBuilder.Entity<BookingTicket>()

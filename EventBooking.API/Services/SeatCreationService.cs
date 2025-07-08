@@ -8,11 +8,16 @@ namespace EventBooking.API.Services
     {
         private readonly AppDbContext _context;
         private readonly ILogger<SeatCreationService> _logger;
+        private readonly ISeatAllocationService _seatAllocationService;
 
-        public SeatCreationService(AppDbContext context, ILogger<SeatCreationService> logger)
+        public SeatCreationService(
+            AppDbContext context, 
+            ILogger<SeatCreationService> logger,
+            ISeatAllocationService seatAllocationService)
         {
             _context = context;
             _logger = logger;
+            _seatAllocationService = seatAllocationService;
         }
 
         public async Task<int> CreateSeatsForEventAsync(int eventId, int venueId)
@@ -21,7 +26,6 @@ namespace EventBooking.API.Services
             
             var event_ = await _context.Events.FindAsync(eventId);
             var venue = await _context.Venues
-                .Include(v => v.Sections)
                 .FirstOrDefaultAsync(v => v.Id == venueId);
 
             if (event_ == null || venue == null)
@@ -55,19 +59,23 @@ namespace EventBooking.API.Services
                 return seatCount;
             }
             
-            // Get sections or create a default one if none exist
-            var sections = venue.Sections.ToList();
+            // Get ticket types or create a default one if none exist
+            var sections = await _context.TicketTypes
+                .Where(tt => tt.EventId == eventId)
+                .ToListAsync();
+            
             if (!sections.Any())
             {
-                _logger.LogInformation("No sections found for venue {VenueId}, creating default section", venueId);
-                var defaultSection = new Section
+                _logger.LogInformation("No ticket types found for event {EventId}, creating default ticket type", eventId);
+                var defaultSection = new TicketType
                 {
+                    Type = "General",
                     Name = "General",
                     Color = "#4B5563",
-                    BasePrice = event_.Price ?? 50.0m,
-                    VenueId = venue.Id
+                    Price = event_.Price ?? 50.0m,
+                    EventId = eventId,
                 };
-                _context.Sections.Add(defaultSection);
+                _context.TicketTypes.Add(defaultSection);
                 await _context.SaveChangesAsync();
                 sections.Add(defaultSection);
             }
@@ -76,20 +84,20 @@ namespace EventBooking.API.Services
             int rowCount = venue.NumberOfRows > 0 ? venue.NumberOfRows : 10;
             int seatsPerRow = venue.SeatsPerRow > 0 ? venue.SeatsPerRow : 12;
             
-            // Distribute sections evenly across rows (e.g., premium in front, standard in back)
+            // Distribute ticket types evenly across rows (e.g., premium in front, standard in back)
             for (int row = 0; row < rowCount; row++)
             {
-                // Determine which section this row belongs to based on position
-                // Front rows get the first sections (usually more premium)
-                int sectionIndex = (row * sections.Count) / rowCount;
-                var section = sections[sectionIndex];
+                // Determine which ticket type this row belongs to based on position
+                // Front rows get the first ticket types (usually more premium)
+                int ticketTypeIndex = (row * sections.Count) / rowCount;
+                var ticketType = sections[ticketTypeIndex];
                 
                 for (int seatNum = 0; seatNum < seatsPerRow; seatNum++)
                 {
                     var newSeat = new Seat
                     {
                         EventId = eventId,
-                        SectionId = section.Id,
+                        TicketTypeId = ticketType.Id,
                         Row = ((char)('A' + row)).ToString(),
                         Number = seatNum + 1,
                         SeatNumber = $"{(char)('A' + row)}{seatNum + 1}",
@@ -98,7 +106,8 @@ namespace EventBooking.API.Services
                         Width = 30,
                         Height = 35,
                         Price = section.BasePrice,
-                        Status = SeatStatus.Available
+                        Status = SeatStatus.Reserved, // Initially mark all seats as reserved
+                        IsReserved = true // Initially mark all seats as reserved until ticket types allocate them
                     };
                     
                     seats.Add(newSeat);

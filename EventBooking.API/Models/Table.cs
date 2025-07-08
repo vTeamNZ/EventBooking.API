@@ -20,9 +20,9 @@
         public decimal PricePerSeat { get; set; }
         public decimal? TablePrice { get; set; } // For full table booking
 
-        // Section relationship
-        public int? SectionId { get; set; }
-        public Section? Section { get; set; }
+        // TicketType relationship (replaces Section)
+        public int? TicketTypeId { get; set; }
+        public TicketType? TicketType { get; set; }
 
         // Navigation properties
         public ICollection<TableReservation> TableReservations { get; set; } = new List<TableReservation>();

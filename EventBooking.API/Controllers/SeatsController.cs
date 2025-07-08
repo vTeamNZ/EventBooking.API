@@ -38,13 +38,11 @@ namespace EventBooking.API.Controllers
             {
                 var eventEntity = await _context.Events
                     .Include(e => e.Venue)
-                        .ThenInclude(v => v!.Sections)
                     .Include(e => e.Seats)
-                        .ThenInclude(s => s.Section)
-                    .Include(e => e.Tables)
-                        .ThenInclude(t => t.Section)
+                        .ThenInclude(s => s.TicketType)
                     .Include(e => e.Tables)
                         .ThenInclude(t => t.Seats)
+                            .ThenInclude(s => s.TicketType)
                     .FirstOrDefaultAsync(e => e.Id == eventId);
 
                 if (eventEntity == null)
@@ -67,6 +65,11 @@ namespace EventBooking.API.Controllers
                 // Clear expired reservations
                 await ClearExpiredReservations(eventId);
 
+                // Get ticket types for coloring seats
+                var ticketTypes = await _context.TicketTypes
+                    .Where(tt => tt.EventId == eventId)
+                    .ToListAsync();
+                
                 var response = new SeatLayoutResponse
                 {
                     EventId = eventId,
@@ -83,7 +86,17 @@ namespace EventBooking.API.Controllers
                     HorizontalAisleRows = eventEntity.Venue?.HorizontalAisleRows ?? string.Empty,
                     HasVerticalAisles = eventEntity.Venue?.HasVerticalAisles ?? false,
                     VerticalAisleSeats = eventEntity.Venue?.VerticalAisleSeats ?? string.Empty,
-                    AisleWidth = eventEntity.Venue?.AisleWidth ?? 2
+                    AisleWidth = eventEntity.Venue?.AisleWidth ?? 2,
+                    // Add ticket types to the response for seat coloring
+                    TicketTypes = ticketTypes.Select(tt => new TicketTypeDTO
+                    {
+                        Id = tt.Id,
+                        Name = tt.Type,
+                        Price = tt.Price,
+                        Description = tt.Description ?? string.Empty,
+                        Color = tt.Color,
+                        SeatRowAssignments = tt.SeatRowAssignments
+                    }).ToList()
                 };
 
                 // Add stage information if available
@@ -95,18 +108,6 @@ namespace EventBooking.API.Controllers
                         response.Stage = stageData;
                     }
                     catch { /* Ignore invalid JSON */ }
-                }
-
-                // Add sections
-                if (eventEntity.Venue?.Sections != null)
-                {
-                    response.Sections = eventEntity.Venue.Sections.Select(s => new SectionDTO
-                    {
-                        Id = s.Id,
-                        Name = s.Name,
-                        Color = s.Color,
-                        BasePrice = s.BasePrice
-                    }).ToList();
                 }
 
                 // Add seats
@@ -123,7 +124,7 @@ namespace EventBooking.API.Controllers
                     Height = s.Height,
                     Price = s.Price,
                     Status = s.Status,
-                    SectionId = s.SectionId,
+                    TicketTypeId = s.TicketTypeId,
                     TableId = s.TableId,
                     ReservedUntil = s.ReservedUntil
                 }).ToList();
@@ -141,7 +142,6 @@ namespace EventBooking.API.Controllers
                     Shape = t.Shape,
                     PricePerSeat = t.PricePerSeat,
                     TablePrice = t.TablePrice,
-                    SectionId = t.SectionId,
                     AvailableSeats = t.Seats.Count(s => s.Status == SeatStatus.Available),
                     Seats = t.Seats.Select(s => new SeatDTO
                     {
@@ -155,7 +155,7 @@ namespace EventBooking.API.Controllers
                         Height = s.Height,
                         Price = s.Price,
                         Status = s.Status,
-                        SectionId = s.SectionId,
+                        TicketTypeId = s.TicketTypeId,
                         TableId = s.TableId,
                         ReservedUntil = s.ReservedUntil
                     }).ToList()
@@ -164,7 +164,6 @@ namespace EventBooking.API.Controllers
                 Console.WriteLine($"Returning response with mode: {response.Mode}");
                 Console.WriteLine($"Response has {response.Seats.Count} seats");
                 Console.WriteLine($"Response has {response.Tables?.Count ?? 0} tables");
-                Console.WriteLine($"Response has {response.Sections?.Count ?? 0} sections");
                 Console.WriteLine($"========== End of GetEventSeatLayout for eventId: {eventId} ==========");
 
                 return Ok(response);
@@ -506,6 +505,64 @@ namespace EventBooking.API.Controllers
             }
 
             return Ok(seats);
+        }
+
+        // GET: api/Seats/event/{eventId}/allocation-status
+        [HttpGet("event/{eventId}/allocation-status")]
+        public async Task<ActionResult> GetSeatAllocationStatus(int eventId)
+        {
+            var eventEntity = await _context.Events
+                .Include(e => e.Venue)
+                .Include(e => e.TicketTypes)
+                .FirstOrDefaultAsync(e => e.Id == eventId);
+
+            if (eventEntity == null)
+            {
+                return NotFound("Event not found");
+            }
+
+            var seats = await _context.Seats
+                .Where(s => s.EventId == eventId)
+                .GroupBy(s => s.Row)
+                .Select(g => new
+                {
+                    Row = g.Key,
+                    TotalSeats = g.Count(),
+                    AvailableSeats = g.Count(s => s.Status == SeatStatus.Available),
+                    ReservedSeats = g.Count(s => s.Status == SeatStatus.Reserved || s.IsReserved),
+                    BookedSeats = g.Count(s => s.Status == SeatStatus.Booked),
+                    UnavailableSeats = g.Count(s => s.Status == SeatStatus.Unavailable)
+                })
+                .OrderBy(r => r.Row)
+                .ToListAsync();
+
+            var ticketTypeAllocations = eventEntity.TicketTypes
+                .Where(tt => !string.IsNullOrEmpty(tt.SeatRowAssignments))
+                .Select(tt => new
+                {
+                    TicketType = tt.Type,
+                    Color = tt.Color,
+                    RowAssignments = tt.SeatRowAssignments
+                })
+                .ToList();
+
+            return Ok(new
+            {
+                EventId = eventId,
+                EventTitle = eventEntity.Title,
+                VenueName = eventEntity.Venue?.Name,
+                SeatSelectionMode = eventEntity.SeatSelectionMode.ToString(),
+                RowStatus = seats,
+                TicketTypeAllocations = ticketTypeAllocations,
+                Summary = new
+                {
+                    TotalSeats = seats.Sum(r => r.TotalSeats),
+                    TotalAvailable = seats.Sum(r => r.AvailableSeats),
+                    TotalReserved = seats.Sum(r => r.ReservedSeats),
+                    TotalBooked = seats.Sum(r => r.BookedSeats),
+                    TotalUnavailable = seats.Sum(r => r.UnavailableSeats)
+                }
+            });
         }
     }
 }

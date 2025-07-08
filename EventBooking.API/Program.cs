@@ -83,6 +83,7 @@ builder.Services.AddScoped<IEventStatusService, EventStatusService>();
 // Add Image Service
 builder.Services.AddScoped<IImageService, ImageService>();
 builder.Services.AddScoped<ISeatCreationService, SeatCreationService>();
+builder.Services.AddScoped<ISeatAllocationService, SeatAllocationService>();
 
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options => 
@@ -271,14 +272,10 @@ using (var scope = app.Services.CreateScope())
     // Ensure database is created
     context.Database.EnsureCreated();
     
-    // Seed roles
-    await IdentitySeeder.SeedRolesAsync(roleManager);
-    
-    // Seed admin user
-    await IdentitySeeder.SeedAdminUserAsync(userManager);
-    
-    // Seed test data
-    await DatabaseSeeder.SeedTestData(context);
+    // Seeding disabled: All data will be managed through the admin panel
+    // await IdentitySeeder.SeedRolesAsync(roleManager);
+    // await IdentitySeeder.SeedAdminUserAsync(userManager);
+    // await DatabaseSeeder.SeedTestData(context);
 }
 
 app.Run();

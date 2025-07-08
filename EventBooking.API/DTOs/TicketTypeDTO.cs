@@ -14,6 +14,9 @@ namespace EventBooking.API.DTOs
 
         [Required]
         public int EventId { get; set; }
+        
+        // Color for visual representation in the UI
+        public string Color { get; set; } = "#3B82F6"; // Default blue color
 
         public List<SeatRowAssignmentDTO> SeatRows { get; set; } = new List<SeatRowAssignmentDTO>();
     }

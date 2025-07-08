@@ -8,7 +8,6 @@ namespace EventBooking.API
     {
         public static async Task SeedAsync(IServiceProvider serviceProvider)
         {
-            // Seeding disabled: No test or mock data will be inserted.
         }
     }
 }

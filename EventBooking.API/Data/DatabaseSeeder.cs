@@ -8,7 +8,6 @@ namespace EventBooking.API.Data
     {
         public static async Task SeedTestData(AppDbContext context)
         {
-            // Seeding disabled: No test or mock data will be inserted.
         }
     }
 }

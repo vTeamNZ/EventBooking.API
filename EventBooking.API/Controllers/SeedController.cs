@@ -53,48 +53,7 @@ namespace EventBooking.API.Controllers
                 await _context.SaveChangesAsync();
 
                 // Create sections for theater
-                var vipSection = new Section
-                {
-                    Name = "VIP",
-                    Color = "#FFD700",
-                    BasePrice = 150.00m,
-                    VenueId = theaterVenue.Id
-                };
-
-                var premiumSection = new Section
-                {
-                    Name = "Premium",
-                    Color = "#C0C0C0",
-                    BasePrice = 100.00m,
-                    VenueId = theaterVenue.Id
-                };
-
-                var generalSection = new Section
-                {
-                    Name = "General",
-                    Color = "#CD7F32",
-                    BasePrice = 75.00m,
-                    VenueId = theaterVenue.Id
-                };
-
-                // Create sections for restaurant
-                var frontSection = new Section
-                {
-                    Name = "Front Tables",
-                    Color = "#FF6B6B",
-                    BasePrice = 120.00m,
-                    VenueId = restaurantVenue.Id
-                };
-
-                var backSection = new Section
-                {
-                    Name = "Back Tables",
-                    Color = "#4ECDC4",
-                    BasePrice = 90.00m,
-                    VenueId = restaurantVenue.Id
-                };
-
-                _context.Sections.AddRange(vipSection, premiumSection, generalSection, frontSection, backSection);
+                // Create ticket types instead of sections
                 await _context.SaveChangesAsync();
 
                 // Create demo events
@@ -310,21 +269,24 @@ namespace EventBooking.API.Controllers
                         EventId = theaterEvent.Id,
                         Type = "VIP",
                         Price = vipSection.BasePrice,
-                        Description = "VIP section seating"
+                        Description = "VIP section seating",
+                        Color = "#FFD700" // Gold color for VIP
                     },
                     new TicketType
                     {
                         EventId = theaterEvent.Id,
                         Type = "Premium",
                         Price = premiumSection.BasePrice,
-                        Description = "Premium section seating"
+                        Description = "Premium section seating",
+                        Color = "#C0C0C0" // Silver color for Premium
                     },
                     new TicketType
                     {
                         EventId = theaterEvent.Id,
                         Type = "General",
                         Price = generalSection.BasePrice,
-                        Description = "General section seating"
+                        Description = "General section seating",
+                        Color = "#CD7F32" // Bronze color for General
                     }
                 });
 
@@ -336,14 +298,16 @@ namespace EventBooking.API.Controllers
                         EventId = diningEvent.Id,
                         Type = "Front Section",
                         Price = frontSection.BasePrice,
-                        Description = "Premium front section tables"
+                        Description = "Premium front section tables",
+                        Color = "#FF6B6B" // Red color for front section
                     },
                     new TicketType
                     {
                         EventId = diningEvent.Id,
                         Type = "Back Section",
                         Price = backSection.BasePrice,
-                        Description = "Standard back section tables"
+                        Description = "Standard back section tables",
+                        Color = "#4ECDC4" // Teal color for back section
                     }
                 });
 
@@ -356,21 +320,24 @@ namespace EventBooking.API.Controllers
                         EventId = concertEvent.Id,
                         Type = "Adult",
                         Price = 50.00m,
-                        Description = "General admission for adults"
+                        Description = "General admission for adults",
+                        Color = "#9F7AEA" // Purple color for adult tickets
                     },
                     new TicketType
                     {
                         EventId = concertEvent.Id,
                         Type = "Student",
                         Price = 35.00m,
-                        Description = "Discounted price for students with valid ID"
+                        Description = "Discounted price for students with valid ID",
+                        Color = "#48BB78" // Green color for student tickets
                     },
                     new TicketType
                     {
                         EventId = concertEvent.Id,
                         Type = "Child",
                         Price = 25.00m,
-                        Description = "For children under 12"
+                        Description = "For children under 12",
+                        Color = "#ED8936" // Orange color for child tickets
                     }
                 });
 
@@ -382,21 +349,24 @@ namespace EventBooking.API.Controllers
                         EventId = festivalEvent.Id,
                         Type = "Adult",
                         Price = 65.00m,
-                        Description = "General admission for adults"
+                        Description = "General admission for adults",
+                        Color = "#F56565" // Red color for adult festival tickets
                     },
                     new TicketType
                     {
                         EventId = festivalEvent.Id,
                         Type = "Student",
                         Price = 45.00m,
-                        Description = "Discounted price for students with valid ID"
+                        Description = "Discounted price for students with valid ID",
+                        Color = "#38B2AC" // Teal color for student festival tickets
                     },
                     new TicketType
                     {
                         EventId = festivalEvent.Id,
                         Type = "Child",
                         Price = 30.00m,
-                        Description = "For children under 12"
+                        Description = "For children under 12",
+                        Color = "#D69E2E" // Yellow color for child festival tickets
                     }
                 });
 
@@ -439,6 +409,72 @@ namespace EventBooking.API.Controllers
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = "Error clearing data", error = ex.Message });
+            }
+        }
+
+        [HttpPost("update-ticket-colors")]
+        public async Task<ActionResult> UpdateTicketTypeColors()
+        {
+            try
+            {
+                var ticketTypes = await _context.TicketTypes.ToListAsync();
+                
+                foreach (var ticket in ticketTypes)
+                {
+                    // Update colors based on ticket type
+                    switch (ticket.Type.ToLower())
+                    {
+                        case "vip":
+                            ticket.Color = "#FFD700"; // Gold
+                            break;
+                        case "premium":
+                            ticket.Color = "#C0C0C0"; // Silver
+                            break;
+                        case "general":
+                            ticket.Color = "#CD7F32"; // Bronze
+                            break;
+                        case "front section":
+                            ticket.Color = "#FF6B6B"; // Red
+                            break;
+                        case "back section":
+                            ticket.Color = "#4ECDC4"; // Teal
+                            break;
+                        case "adult":
+                            // Use different colors for different events
+                            if (ticket.Price == 50.00m) // Concert
+                                ticket.Color = "#9F7AEA"; // Purple
+                            else if (ticket.Price == 65.00m) // Festival
+                                ticket.Color = "#F56565"; // Red
+                            break;
+                        case "student":
+                            if (ticket.Price == 35.00m) // Concert
+                                ticket.Color = "#48BB78"; // Green
+                            else if (ticket.Price == 45.00m) // Festival
+                                ticket.Color = "#38B2AC"; // Teal
+                            break;
+                        case "child":
+                            if (ticket.Price == 25.00m) // Concert
+                                ticket.Color = "#ED8936"; // Orange
+                            else if (ticket.Price == 30.00m) // Festival
+                                ticket.Color = "#D69E2E"; // Yellow
+                            break;
+                        default:
+                            ticket.Color = "#3B82F6"; // Default blue
+                            break;
+                    }
+                }
+                
+                await _context.SaveChangesAsync();
+                
+                return Ok(new
+                {
+                    message = "Ticket type colors updated successfully",
+                    updatedCount = ticketTypes.Count
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error updating ticket colors: {ex.Message}");
             }
         }
     }
