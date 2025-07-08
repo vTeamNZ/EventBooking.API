@@ -16,8 +16,9 @@ namespace EventBooking.API.DTOs
         [Required(ErrorMessage = "Event date is required")]
         public DateTime Date { get; set; }
 
-        [Required(ErrorMessage = "Event location is required")]
-        [MinLength(3, ErrorMessage = "Location must be at least 3 characters")]
+        // Either venueId or location is required
+        public int? VenueId { get; set; }
+        
         public string Location { get; set; } = string.Empty;
 
         [Required(ErrorMessage = "Event price is required")]

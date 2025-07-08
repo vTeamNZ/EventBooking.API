@@ -26,6 +26,7 @@ namespace EventBooking.API.Data
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<BookingTicket> BookingTickets { get; set; }
         public DbSet<BookingFood> BookingFoods { get; set; }
+        public DbSet<SeatReservation> SeatReservations { get; set; }
         
         // New entities for seat selection
         public DbSet<Venue> Venues { get; set; }
@@ -50,7 +51,7 @@ namespace EventBooking.API.Data
                 .HasOne(b => b.Event)
                 .WithMany()
                 .HasForeignKey(b => b.EventId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.Cascade);
 
             // Configure Venue relationships
             modelBuilder.Entity<Event>()
@@ -99,8 +100,52 @@ namespace EventBooking.API.Data
                 .OnDelete(DeleteBehavior.SetNull);
 
             // Configure decimal precision
+            modelBuilder.Entity<Event>()
+                .Property(e => e.Price)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<FoodItem>()
+                .Property(f => f.Price)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<TicketType>()
+                .Property(t => t.Price)
+                .HasPrecision(18, 2);
+
             modelBuilder.Entity<Seat>()
                 .Property(s => s.Price)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.X)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.Y)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.Width)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.Height)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.X)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.Y)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.Width)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.Height)
                 .HasPrecision(18, 2);
 
             modelBuilder.Entity<Table>()
@@ -139,23 +184,39 @@ namespace EventBooking.API.Data
                 .HasForeignKey(bf => bf.FoodItemId)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            // Configure SeatReservation
+            modelBuilder.Entity<SeatReservation>()
+                .HasOne(sr => sr.Event)
+                .WithMany()
+                .HasForeignKey(sr => sr.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<SeatReservation>()
+                .HasIndex(sr => new { sr.EventId, sr.Row, sr.Number })
+                .IsUnique();
+
+            // Add composite index for looking up active reservations
+            modelBuilder.Entity<SeatReservation>()
+                .HasIndex(sr => new { sr.EventId, sr.IsConfirmed, sr.ExpiresAt });
+
             // Optional: Ensure delete behaviors and FK relationship
             modelBuilder.Entity<Organizer>()
                 .HasOne(o => o.User)
                 .WithOne()
                 .HasForeignKey<Organizer>(o => o.UserId);
 
+            // Configure Reservation relationships explicitly to fix shadow property issue
             modelBuilder.Entity<Reservation>()
-                .HasOne(r => r.User)
+                .HasOne<ApplicationUser>(r => r.User)
                 .WithMany()
                 .HasForeignKey(r => r.UserId)
-                .OnDelete(DeleteBehavior.Restrict); // 👈 disables cascade for User
+                .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<Reservation>()
                 .HasOne(r => r.Event)
                 .WithMany()
                 .HasForeignKey(r => r.EventId)
-                .OnDelete(DeleteBehavior.Cascade); // Optional: you can leave this one
+                .OnDelete(DeleteBehavior.Cascade);
 
         }
 

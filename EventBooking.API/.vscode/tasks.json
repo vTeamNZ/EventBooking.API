@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build and start EventBooking.API",
+			"type": "shell",
+			"command": "cd c:/Users/user/source/repos/vTeamNZ/EventBooking.API/EventBooking.API && dotnet build && dotnet run",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": [
+				"$msCompile"
+			]
+		}
+	]
+}

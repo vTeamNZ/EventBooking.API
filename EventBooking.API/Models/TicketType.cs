@@ -17,6 +17,9 @@ namespace EventBooking.API.Models
         [Required]
         public int EventId { get; set; }
 
+        // Seat row assignments for venues with allocated seating
+        public string? SeatRowAssignments { get; set; } = string.Empty; // JSON string storing seat row assignments
+
         // Navigation property
         public Event? Event { get; set; }
     }

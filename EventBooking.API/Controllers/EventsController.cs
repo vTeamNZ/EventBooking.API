@@ -1,7 +1,7 @@
 ﻿using EventBooking.API.Data;
 using EventBooking.API.DTOs;
 using EventBooking.API.Models;
-using EventBooking.API.Services; // Add this line
+using EventBooking.API.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -15,8 +15,7 @@ using System.Threading.Tasks;
 namespace EventBooking.API.Controllers
 {
     //[Authorize(Roles = "Admin,Organizer")]
-    [AllowAnonymous]
-    //[Authorize]
+    [Authorize(Roles = "Admin,Organizer")]
     [Route("api/[controller]")]
     [ApiController]
     public class EventsController : ControllerBase
@@ -24,12 +23,18 @@ namespace EventBooking.API.Controllers
         private readonly AppDbContext _context;
         private readonly IEventStatusService _eventStatusService;
         private readonly IImageService _imageService;
+        private readonly ISeatCreationService _seatCreationService;
 
-        public EventsController(AppDbContext context, IEventStatusService eventStatusService, IImageService imageService)
+        public EventsController(
+            AppDbContext context, 
+            IEventStatusService eventStatusService, 
+            IImageService imageService,
+            ISeatCreationService seatCreationService)
         {
             _context = context;
             _eventStatusService = eventStatusService;
             _imageService = imageService;
+            _seatCreationService = seatCreationService;
         }
 
         // GET: api/Events
@@ -40,8 +45,11 @@ namespace EventBooking.API.Controllers
             var currentNZTime = _eventStatusService.GetCurrentNZTime();
             var currentDate = currentNZTime.Date;
 
-            // Get all events first, then sort them
+            // Get all events with venue and ticket type information included
             var allEvents = await _context.Events
+                .Include(e => e.Venue)
+                .Include(e => e.Organizer)
+                .Include(e => e.TicketTypes)
                 .Where(e => e.Date.HasValue)
                 .OrderBy(e => e.Date)
                 .ToListAsync();
@@ -64,7 +72,11 @@ namespace EventBooking.API.Controllers
         [HttpGet("{id}")]
         public async Task<ActionResult<Event>> GetEvent(int id)
         {
-            var @event = await _context.Events.FindAsync(id);
+            var @event = await _context.Events
+                .Include(e => e.Venue)
+                .Include(e => e.Organizer)
+                .Include(e => e.TicketTypes)
+                .FirstOrDefaultAsync(e => e.Id == id);
 
             if (@event == null)
             {
@@ -72,6 +84,25 @@ namespace EventBooking.API.Controllers
             }
 
             return @event;
+        }
+
+        // GET: api/Events/by-title/{title}
+        [AllowAnonymous]
+        [HttpGet("by-title/{title}")]
+        public async Task<ActionResult<Event>> GetEventByTitle(string title)
+        {
+            var events = await _context.Events
+                .Include(e => e.Venue)
+                .Include(e => e.Organizer)
+                .Where(e => e.Title.Contains(title))
+                .FirstOrDefaultAsync();
+
+            if (events == null)
+            {
+                return NotFound();
+            }
+
+            return events;
         }
 
         [Authorize(Roles = "Organizer")]
@@ -93,21 +124,26 @@ namespace EventBooking.API.Controllers
                 return BadRequest(ModelState);
             }
 
-            // Get the current user's organizer ID
+            // Get the current user's organizer ID or use first available organizer for testing
             var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            Organizer organizer;
+            
             if (userId == null)
             {
-                logger.LogWarning("CreateEvent: User not authenticated");
-                return Unauthorized();
+                // For testing purposes, use the first available organizer
+                logger.LogWarning("CreateEvent: No authenticated user, using first available organizer for testing");
+                organizer = await _context.Organizers.FirstOrDefaultAsync();
             }
-
-            var organizer = await _context.Organizers
-                .FirstOrDefaultAsync(o => o.UserId == userId);
+            else
+            {
+                organizer = await _context.Organizers
+                    .FirstOrDefaultAsync(o => o.UserId == userId);
+            }
             
             if (organizer == null)
             {
-                logger.LogWarning("CreateEvent: Organizer profile not found for user {UserId}", userId);
-                return BadRequest("Organizer profile not found. Please contact support.");
+                logger.LogWarning("CreateEvent: No organizer found");
+                return BadRequest("No organizer available. Please contact support.");
             }
 
             try
@@ -121,6 +157,18 @@ namespace EventBooking.API.Controllers
                     logger.LogInformation("Image uploaded successfully for event: {ImageUrl}", imageUrl);
                 }
 
+                // Check if VenueId is provided and valid
+                Venue? venue = null;
+                if (dto.VenueId.HasValue && dto.VenueId.Value > 0)
+                {
+                    venue = await _context.Venues.FindAsync(dto.VenueId.Value);
+                    if (venue == null)
+                    {
+                        logger.LogWarning("CreateEvent: Invalid venue ID {VenueId}", dto.VenueId.Value);
+                        return BadRequest(new { message = "The selected venue does not exist." });
+                    }
+                }
+
                 var newEvent = new Event
                 {
                     Title = dto.Title,
@@ -131,13 +179,43 @@ namespace EventBooking.API.Controllers
                     Capacity = dto.Capacity,
                     OrganizerId = organizer.Id,
                     ImageUrl = imageUrl,
-                    SeatSelectionMode = dto.SeatSelectionMode,
+                    // Use venue's supported seat selection mode if available, otherwise use DTO value
+                    SeatSelectionMode = venue?.SeatSelectionMode ?? dto.SeatSelectionMode,
                     StagePosition = dto.StagePosition,
+                    VenueId = dto.VenueId,
                     IsActive = false // Events are inactive by default until approved by admin
                 };
 
                 _context.Events.Add(newEvent);
                 await _context.SaveChangesAsync();
+
+                // Automatically create seats if we have a venue and are using EventHall mode
+                int seatsCreated = 0;
+                
+                // Log the event data to debug
+                logger.LogInformation("Event created with SeatSelectionMode: {SeatSelectionMode} (value: {ModeValue}), VenueId: {VenueId}", 
+                    newEvent.SeatSelectionMode, (int)newEvent.SeatSelectionMode, newEvent.VenueId);
+                
+                // Force EventHall mode if we have a venue with allocated seating
+                if (newEvent.VenueId.HasValue && dto.SeatSelectionMode.ToString() == "1")
+                {
+                    newEvent.SeatSelectionMode = SeatSelectionMode.EventHall;
+                    await _context.SaveChangesAsync();
+                    logger.LogInformation("Forced SeatSelectionMode to EventHall");
+                }
+                
+                if (newEvent.VenueId.HasValue && newEvent.SeatSelectionMode == SeatSelectionMode.EventHall)
+                {
+                    logger.LogInformation("Creating seats for event {EventId} with venue {VenueId}", 
+                        newEvent.Id, newEvent.VenueId.Value);
+                    seatsCreated = await _seatCreationService.CreateSeatsForEventAsync(newEvent.Id, newEvent.VenueId.Value);
+                    logger.LogInformation("Created {SeatsCount} seats for event {EventId}", seatsCreated, newEvent.Id);
+                }
+                else
+                {
+                    logger.LogWarning("Not creating seats because: VenueId exists: {HasVenue}, SeatSelectionMode: {Mode}", 
+                        newEvent.VenueId.HasValue, newEvent.SeatSelectionMode);
+                }
 
                 logger.LogInformation("Event created successfully with ID {EventId} by organizer {OrganizerId}", 
                     newEvent.Id, organizer.Id);
@@ -145,7 +223,8 @@ namespace EventBooking.API.Controllers
                 return Ok(new { 
                     id = newEvent.Id,
                     message = "Event created successfully. It will be visible after admin approval.",
-                    eventData = newEvent 
+                    eventData = newEvent,
+                    seatsCreated = seatsCreated
                 });
             }
             catch (ArgumentException ex)

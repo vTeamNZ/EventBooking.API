@@ -4,6 +4,7 @@ using EventBooking.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace EventBooking.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250706111708_FixDuplicateColumns")]
+    partial class FixDuplicateColumns
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -733,9 +736,6 @@ namespace EventBooking.API.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
-                    b.Property<string>("SeatRowAssignments")
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<string>("Type")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -759,9 +759,6 @@ namespace EventBooking.API.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<int>("AisleWidth")
-                        .HasColumnType("int");
-
                     b.Property<string>("City")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -770,13 +767,7 @@ namespace EventBooking.API.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<bool>("HasHorizontalAisles")
-                        .HasColumnType("bit");
-
                     b.Property<bool>("HasStaggeredSeating")
-                        .HasColumnType("bit");
-
-                    b.Property<bool>("HasVerticalAisles")
                         .HasColumnType("bit");
 
                     b.Property<bool>("HasWheelchairSpaces")
@@ -784,10 +775,6 @@ namespace EventBooking.API.Migrations
 
                     b.Property<int>("Height")
                         .HasColumnType("int");
-
-                    b.Property<string>("HorizontalAisleRows")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("LayoutData")
                         .IsRequired()
@@ -807,18 +794,11 @@ namespace EventBooking.API.Migrations
                     b.Property<int>("RowSpacing")
                         .HasColumnType("int");
 
-                    b.Property<int>("SeatSelectionMode")
-                        .HasColumnType("int");
-
                     b.Property<int>("SeatSpacing")
                         .HasColumnType("int");
 
                     b.Property<int>("SeatsPerRow")
                         .HasColumnType("int");
-
-                    b.Property<string>("VerticalAisleSeats")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("WheelchairSpaces")
                         .HasColumnType("int");

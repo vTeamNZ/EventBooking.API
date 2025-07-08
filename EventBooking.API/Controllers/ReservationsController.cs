@@ -253,5 +253,91 @@ namespace EventBooking.API.Controllers
 
             return Ok(currentReservations);
         }
+
+        // POST: api/reservations/reserve-tickets
+        [HttpPost("reserve-tickets")]
+        [Authorize(Roles = "Admin,Organizer")]
+        public async Task<ActionResult> ReserveTicketsWithoutPayment([FromBody] TicketReservationRequest request)
+        {
+            if (request == null)
+            {
+                return BadRequest("Invalid reservation data");
+            }
+
+            try
+            {
+                // Create a new reservation
+                // TODO: Fix Reservation model - current model doesn't match expected properties
+                throw new NotImplementedException("Reservation creation needs to be updated to match the current Reservation model");
+                
+                /*
+                var reservation = new Reservation
+                {
+                    EventId = request.EventId,
+                    UserId = request.UserId,
+                    CustomerFirstName = request.CustomerDetails.FirstName,
+                    CustomerLastName = request.CustomerDetails.LastName,
+                    CustomerEmail = request.CustomerDetails.Email,
+                    CustomerPhone = request.CustomerDetails.Mobile,
+                    TotalAmount = request.TotalAmount,
+                    Status = "Reserved",
+                    CreatedAt = DateTime.UtcNow,
+                    ReservationCode = Guid.NewGuid().ToString("N").Substring(0, 8).ToUpper()
+                };
+                */
+                
+                /*
+                _context.Reservations.Add(reservation);
+                await _context.SaveChangesAsync();
+
+                // Add ticket details
+                foreach (var ticket in request.TicketDetails)
+                {
+                    for (int i = 0; i < ticket.Quantity; i++)
+                    {
+                        var reservedTicket = new ReservedTicket
+                        {
+                            ReservationId = reservation.Id,
+                            TicketTypeId = ticket.TicketTypeId,
+                            Price = ticket.Price
+                        };
+
+                        _context.ReservedTickets.Add(reservedTicket);
+                    }
+                }
+
+                // Add food details
+                foreach (var food in request.SelectedFoods)
+                {
+                    for (int i = 0; i < food.Quantity; i++)
+                    {
+                        var reservedFood = new ReservedFood
+                        {
+                            ReservationId = reservation.Id,
+                            FoodItemId = food.FoodItemId,
+                            Price = food.Price
+                        };
+
+                        _context.ReservedFoods.Add(reservedFood);
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new { 
+                    reservationCode = reservation.ReservationCode,
+                    message = "Reservation created successfully!" 
+                });
+                */
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { 
+                    Success = false, 
+                    Message = "An error occurred while reserving tickets",
+                    Error = ex.Message
+                });
+            }
+        }
     }
 }

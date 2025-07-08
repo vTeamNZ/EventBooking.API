@@ -113,18 +113,17 @@ namespace EventBooking.API.Controllers
                     StagePosition = JsonSerializer.Serialize(new { x = 300, y = 50, width = 200, height = 40 })
                 };
 
-                var diningEvent = new Event
+                var festivalEvent = new Event
                 {
-                    Title = "Wine Tasting Dinner",
-                    Description = "Elegant dining experience with table reservations",
+                    Title = "Summer Music Festival",
+                    Description = "General admission outdoor music festival",
                     Date = DateTime.Now.AddDays(45),
-                    Location = "Elegant Dining Hall",
-                    Price = 90.00m,
-                    Capacity = 80,
+                    Location = "Festival Grounds",
+                    Price = 65.00m,
+                    Capacity = 1000,
                     ImageUrl = "/events/2.jpg",
                     IsActive = true,
-                    SeatSelectionMode = SeatSelectionMode.TableSeating,
-                    VenueId = restaurantVenue.Id
+                    SeatSelectionMode = SeatSelectionMode.GeneralAdmission
                 };
 
                 var concertEvent = new Event
@@ -139,8 +138,23 @@ namespace EventBooking.API.Controllers
                     IsActive = true,
                     SeatSelectionMode = SeatSelectionMode.GeneralAdmission
                 };
+                
+                var diningEvent = new Event
+                {
+                    Title = "Gala Dinner",
+                    Description = "Elegant dining experience with table seating",
+                    Date = DateTime.Now.AddDays(50),
+                    Location = "Elegant Dining Hall",
+                    Price = 120.00m,
+                    Capacity = 100,
+                    ImageUrl = "/events/4.jpg",
+                    IsActive = true,
+                    SeatSelectionMode = SeatSelectionMode.EventHall,
+                    VenueId = restaurantVenue.Id,
+                    StagePosition = JsonSerializer.Serialize(new { x = 250, y = 40, width = 100, height = 30 })
+                };
 
-                _context.Events.AddRange(theaterEvent, diningEvent, concertEvent);
+                _context.Events.AddRange(theaterEvent, festivalEvent, concertEvent, diningEvent);
                 await _context.SaveChangesAsync();
 
                 // Create seats for theater event
@@ -285,8 +299,57 @@ namespace EventBooking.API.Controllers
 
                 _context.Seats.AddRange(tableSeats);
 
-                // Create ticket types for general admission event
-                var ticketTypes = new List<TicketType>
+                // Create ticket types for all events
+                var ticketTypes = new List<TicketType>();
+
+                // Theater event ticket types
+                ticketTypes.AddRange(new[]
+                {
+                    new TicketType
+                    {
+                        EventId = theaterEvent.Id,
+                        Type = "VIP",
+                        Price = vipSection.BasePrice,
+                        Description = "VIP section seating"
+                    },
+                    new TicketType
+                    {
+                        EventId = theaterEvent.Id,
+                        Type = "Premium",
+                        Price = premiumSection.BasePrice,
+                        Description = "Premium section seating"
+                    },
+                    new TicketType
+                    {
+                        EventId = theaterEvent.Id,
+                        Type = "General",
+                        Price = generalSection.BasePrice,
+                        Description = "General section seating"
+                    }
+                });
+
+                // Dining event ticket types
+                ticketTypes.AddRange(new[]
+                {
+                    new TicketType
+                    {
+                        EventId = diningEvent.Id,
+                        Type = "Front Section",
+                        Price = frontSection.BasePrice,
+                        Description = "Premium front section tables"
+                    },
+                    new TicketType
+                    {
+                        EventId = diningEvent.Id,
+                        Type = "Back Section",
+                        Price = backSection.BasePrice,
+                        Description = "Standard back section tables"
+                    }
+                });
+
+                // General admission events ticket types
+                // Concert event
+                ticketTypes.AddRange(new[]
                 {
                     new TicketType
                     {
@@ -309,7 +372,33 @@ namespace EventBooking.API.Controllers
                         Price = 25.00m,
                         Description = "For children under 12"
                     }
-                };
+                });
+
+                // Festival event
+                ticketTypes.AddRange(new[]
+                {
+                    new TicketType
+                    {
+                        EventId = festivalEvent.Id,
+                        Type = "Adult",
+                        Price = 65.00m,
+                        Description = "General admission for adults"
+                    },
+                    new TicketType
+                    {
+                        EventId = festivalEvent.Id,
+                        Type = "Student",
+                        Price = 45.00m,
+                        Description = "Discounted price for students with valid ID"
+                    },
+                    new TicketType
+                    {
+                        EventId = festivalEvent.Id,
+                        Type = "Child",
+                        Price = 30.00m,
+                        Description = "For children under 12"
+                    }
+                });
 
                 _context.TicketTypes.AddRange(ticketTypes);
                 await _context.SaveChangesAsync();

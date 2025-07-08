@@ -26,6 +26,9 @@ builder.Logging.AddFile(Path.Combine(logsPath, "app-{Date}.log"));
 // Add services to the container.
 builder.Services.AddEndpointsApiExplorer();
 
+// Add ReservationCleanupService
+builder.Services.AddHostedService<ReservationCleanupService>();
+
 // Configure Swagger with JWT support
 builder.Services.AddSwaggerGen(c =>
 {
@@ -79,6 +82,7 @@ builder.Services.AddScoped<IEventStatusService, EventStatusService>();
 
 // Add Image Service
 builder.Services.AddScoped<IImageService, ImageService>();
+builder.Services.AddScoped<ISeatCreationService, SeatCreationService>();
 
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options => 

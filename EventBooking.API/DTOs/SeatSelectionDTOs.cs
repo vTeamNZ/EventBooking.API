@@ -6,14 +6,21 @@ namespace EventBooking.API.DTOs
     {
         public int EventId { get; set; }
         public SeatSelectionMode Mode { get; set; }
-        public VenueDTO? Venue { get; set; }
+        public SeatLayoutVenueDTO? Venue { get; set; }
         public StageDTO? Stage { get; set; }
         public List<SeatDTO> Seats { get; set; } = new List<SeatDTO>();
         public List<TableDTO> Tables { get; set; } = new List<TableDTO>();
         public List<SectionDTO> Sections { get; set; } = new List<SectionDTO>();
+        
+        // Aisle configuration
+        public bool HasHorizontalAisles { get; set; } = false;
+        public string HorizontalAisleRows { get; set; } = string.Empty; 
+        public bool HasVerticalAisles { get; set; } = false;
+        public string VerticalAisleSeats { get; set; } = string.Empty;
+        public int AisleWidth { get; set; } = 2;
     }
 
-    public class VenueDTO
+    public class SeatLayoutVenueDTO
     {
         public int Id { get; set; }
         public string Name { get; set; } = string.Empty;
@@ -74,6 +81,13 @@ namespace EventBooking.API.DTOs
     public class ReserveSeatRequest
     {
         public int SeatId { get; set; }
+        public string SessionId { get; set; } = string.Empty;
+    }
+
+    public class ReserveRowSeatRequest
+    {
+        public int Row { get; set; }
+        public int Number { get; set; }
         public string SessionId { get; set; } = string.Empty;
     }
 

@@ -5,7 +5,6 @@ namespace EventBooking.API.Models
     public enum SeatSelectionMode
     {
         EventHall = 1,
-        TableSeating = 2,
         GeneralAdmission = 3
     }
 
