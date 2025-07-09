@@ -60,14 +60,14 @@ namespace EventBooking.API.Services
             }
             
             // Get ticket types or create a default one if none exist
-            var sections = await _context.TicketTypes
+            var ticketTypes = await _context.TicketTypes
                 .Where(tt => tt.EventId == eventId)
                 .ToListAsync();
             
-            if (!sections.Any())
+            if (!ticketTypes.Any())
             {
                 _logger.LogInformation("No ticket types found for event {EventId}, creating default ticket type", eventId);
-                var defaultSection = new TicketType
+                var defaultTicketType = new TicketType
                 {
                     Type = "General",
                     Name = "General",
@@ -75,9 +75,9 @@ namespace EventBooking.API.Services
                     Price = event_.Price ?? 50.0m,
                     EventId = eventId,
                 };
-                _context.TicketTypes.Add(defaultSection);
+                _context.TicketTypes.Add(defaultTicketType);
                 await _context.SaveChangesAsync();
-                sections.Add(defaultSection);
+                ticketTypes.Add(defaultTicketType);
             }
 
             var seats = new List<Seat>();
@@ -89,8 +89,8 @@ namespace EventBooking.API.Services
             {
                 // Determine which ticket type this row belongs to based on position
                 // Front rows get the first ticket types (usually more premium)
-                int ticketTypeIndex = (row * sections.Count) / rowCount;
-                var ticketType = sections[ticketTypeIndex];
+                int ticketTypeIndex = (row * ticketTypes.Count) / rowCount;
+                var ticketType = ticketTypes[ticketTypeIndex];
                 
                 for (int seatNum = 0; seatNum < seatsPerRow; seatNum++)
                 {
@@ -105,7 +105,7 @@ namespace EventBooking.API.Services
                         Y = 100 + row * (venue.RowSpacing > 0 ? venue.RowSpacing : 40),
                         Width = 30,
                         Height = 35,
-                        Price = section.BasePrice,
+                        Price = ticketType.Price,
                         Status = SeatStatus.Reserved, // Initially mark all seats as reserved
                         IsReserved = true // Initially mark all seats as reserved until ticket types allocate them
                     };

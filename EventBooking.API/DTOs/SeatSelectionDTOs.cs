@@ -49,6 +49,7 @@ namespace EventBooking.API.DTOs
         public decimal Price { get; set; }
         public SeatStatus Status { get; set; }
         public int? TicketTypeId { get; set; }
+        public TicketTypeDTO? TicketType { get; set; }
         public int? TableId { get; set; }
         public DateTime? ReservedUntil { get; set; }
     }
@@ -101,7 +102,6 @@ namespace EventBooking.API.DTOs
     {
         public int EventId { get; set; }
         public SeatSelectionMode Mode { get; set; }
-        public Dictionary<string, decimal> SectionPricing { get; set; } = new Dictionary<string, decimal>();
         public List<TicketTypeDTO> TicketTypes { get; set; } = new List<TicketTypeDTO>();
     }
 

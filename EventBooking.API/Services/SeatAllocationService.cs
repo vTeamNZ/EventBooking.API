@@ -48,39 +48,30 @@ namespace EventBooking.API.Services
                 return;
             }
 
-            // Get all ticket types with row assignments
-            var ticketTypesWithRows = eventEntity.TicketTypes
-                .Where(tt => !string.IsNullOrEmpty(tt.SeatRowAssignments))
-                .ToList();
-
-            // Get all allocated rows from ticket types
-            var allocatedRows = new HashSet<string>();
+            // Dictionary to store ticket type assignments: row -> ticket type
+            var rowToTicketType = new Dictionary<string, TicketType>();
             
-            foreach (var ticketType in ticketTypesWithRows)
+            // Process ticket types with row assignments first
+            foreach (var ticketType in eventEntity.TicketTypes.Where(tt => !string.IsNullOrEmpty(tt.SeatRowAssignments)))
             {
                 try
                 {
-                    // Check if seat row assignments are available before deserializing
-                    if (!string.IsNullOrEmpty(ticketType.SeatRowAssignments))
+                    var rowAssignments = System.Text.Json.JsonSerializer.Deserialize<List<SeatRowAssignment>>(ticketType.SeatRowAssignments);
+                    if (rowAssignments != null)
                     {
-                        var rowAssignments = System.Text.Json.JsonSerializer.Deserialize<List<SeatRowAssignment>>(ticketType.SeatRowAssignments);
-                        if (rowAssignments != null)
-                        {
                         foreach (var assignment in rowAssignments)
                         {
                             if (!string.IsNullOrEmpty(assignment.RowStart) && !string.IsNullOrEmpty(assignment.RowEnd))
                             {
-                                // Add all rows in the range
                                 var startChar = assignment.RowStart[0];
                                 var endChar = assignment.RowEnd[0];
                                 
                                 for (char row = startChar; row <= endChar; row++)
                                 {
-                                    allocatedRows.Add(row.ToString());
+                                    rowToTicketType[row.ToString()] = ticketType;
                                 }
                             }
                         }
-                    }
                     }
                 }
                 catch (Exception ex)
@@ -89,54 +80,67 @@ namespace EventBooking.API.Services
                 }
             }
 
-            // Get all rows in the venue
-            var allRows = new List<string>();
-            var rowCount = eventEntity.Venue.NumberOfRows > 0 ? eventEntity.Venue.NumberOfRows : 10;
-            
-            for (int i = 0; i < rowCount; i++)
-            {
-                allRows.Add(((char)('A' + i)).ToString());
-            }
-
-            // Find unallocated rows
-            var unallocatedRows = allRows.Except(allocatedRows).ToList();
-
-            _logger.LogInformation("Event {EventId}: {AllocatedCount} allocated rows, {UnallocatedCount} unallocated rows", 
-                eventId, allocatedRows.Count, unallocatedRows.Count);
-
             // Get all seats for this event
             var allSeats = await _context.Seats
                 .Where(s => s.EventId == eventId)
                 .ToListAsync();
 
             var updatedSeats = 0;
+            var unallocatedRows = new HashSet<string>();
 
-            // Mark seats in allocated rows as Available (if they're not already booked)
-            foreach (var seat in allSeats.Where(s => allocatedRows.Contains(s.Row)))
+            // Update all seats based on their row assignment
+            foreach (var seat in allSeats)
             {
-                if (seat.Status == SeatStatus.Reserved && seat.IsReserved)
+                if (rowToTicketType.TryGetValue(seat.Row, out var ticketType))
                 {
-                    seat.Status = SeatStatus.Available;
-                    seat.IsReserved = false;
-                    updatedSeats++;
+                    // Row is allocated to a ticket type
+                    bool needsUpdate = false;
+
+                    // Update ticket type and price
+                    if (seat.TicketTypeId != ticketType.Id)
+                    {
+                        seat.TicketTypeId = ticketType.Id;
+                        seat.Price = ticketType.Price;
+                        needsUpdate = true;
+                    }
+
+                    // Set status based on ticket type
+                    var isGeneralAdmission = ticketType.Type.Equals("General", StringComparison.OrdinalIgnoreCase) || 
+                                           ticketType.Name.Equals("General", StringComparison.OrdinalIgnoreCase);
+                    
+                    var newStatus = isGeneralAdmission ? SeatStatus.Reserved : SeatStatus.Available;
+                    if (seat.Status != newStatus || seat.IsReserved != isGeneralAdmission)
+                    {
+                        seat.Status = newStatus;
+                        seat.IsReserved = isGeneralAdmission;
+                        needsUpdate = true;
+                    }
+
+                    if (needsUpdate)
+                    {
+                        updatedSeats++;
+                    }
                 }
-            }
-
-            // Mark seats in unallocated rows as Reserved
-            foreach (var seat in allSeats.Where(s => unallocatedRows.Contains(s.Row)))
-            {
-                if (seat.Status != SeatStatus.Reserved || !seat.IsReserved)
+                else
                 {
-                    seat.Status = SeatStatus.Reserved;
-                    seat.IsReserved = true;
-                    updatedSeats++;
+                    // Row is not allocated to any ticket type - mark as unallocated
+                    unallocatedRows.Add(seat.Row);
+                    
+                    if (seat.Status != SeatStatus.Reserved || !seat.IsReserved)
+                    {
+                        seat.Status = SeatStatus.Reserved;
+                        seat.IsReserved = true;
+                        updatedSeats++;
+                    }
                 }
             }
 
             if (updatedSeats > 0)
             {
                 await _context.SaveChangesAsync();
-                _logger.LogInformation("Updated {UpdatedSeats} seats for event {EventId}", updatedSeats, eventId);
+                _logger.LogInformation(
+                    "Updated {UpdatedSeats} seats for event {EventId}. Allocated rows: {AllocatedRows}, Unallocated rows: {UnallocatedRows}", 
+                    updatedSeats, eventId, rowToTicketType.Keys.Count, unallocatedRows.Count);
             }
             else
             {

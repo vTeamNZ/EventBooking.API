@@ -116,6 +116,61 @@ namespace EventBooking.API.Controllers
                 _context.Events.AddRange(theaterEvent, festivalEvent, concertEvent, diningEvent);
                 await _context.SaveChangesAsync();
 
+                // Create ticket types for theater event
+                var vipTicketType = new TicketType
+                {
+                    EventId = theaterEvent.Id,
+                    Type = "VIP",
+                    Name = "VIP",
+                    Color = "#FFD700",
+                    Price = 120.00m,
+                    Description = "VIP seating with best view"
+                };
+
+                var premiumTicketType = new TicketType
+                {
+                    EventId = theaterEvent.Id,
+                    Type = "Premium",
+                    Name = "Premium",
+                    Color = "#FFA500",
+                    Price = 90.00m,
+                    Description = "Premium seating with good view"
+                };
+
+                var generalTicketType = new TicketType
+                {
+                    EventId = theaterEvent.Id,
+                    Type = "General",
+                    Name = "General",
+                    Color = "#87CEEB",
+                    Price = 60.00m,
+                    Description = "General admission seating"
+                };
+
+                // Create ticket types for dining event
+                var frontTicketType = new TicketType
+                {
+                    EventId = diningEvent.Id,
+                    Type = "Front Tables",
+                    Name = "Front Tables",
+                    Color = "#FF69B4",
+                    Price = 150.00m,
+                    Description = "Front table seating"
+                };
+
+                var backTicketType = new TicketType
+                {
+                    EventId = diningEvent.Id,
+                    Type = "Back Tables",
+                    Name = "Back Tables",
+                    Color = "#DDA0DD",
+                    Price = 120.00m,
+                    Description = "Back table seating"
+                };
+
+                _context.TicketTypes.AddRange(vipTicketType, premiumTicketType, generalTicketType, frontTicketType, backTicketType);
+                await _context.SaveChangesAsync();
+
                 // Create seats for theater event
                 var theaterSeats = new List<Seat>();
                 var seatId = 1;
@@ -128,7 +183,7 @@ namespace EventBooking.API.Controllers
                         theaterSeats.Add(new Seat
                         {
                             EventId = theaterEvent.Id,
-                            SectionId = vipSection.Id,
+                            TicketTypeId = vipTicketType.Id,
                             Row = ((char)('A' + row - 1)).ToString(),
                             Number = seat,
                             SeatNumber = $"{(char)('A' + row - 1)}{seat}",
@@ -136,7 +191,7 @@ namespace EventBooking.API.Controllers
                             Y = 100 + (row - 1) * 40,
                             Width = 30,
                             Height = 35,
-                            Price = vipSection.BasePrice,
+                            Price = vipTicketType.Price,
                             Status = SeatStatus.Available
                         });
                     }
@@ -150,7 +205,7 @@ namespace EventBooking.API.Controllers
                         theaterSeats.Add(new Seat
                         {
                             EventId = theaterEvent.Id,
-                            SectionId = premiumSection.Id,
+                            TicketTypeId = premiumTicketType.Id,
                             Row = ((char)('A' + row - 1)).ToString(),
                             Number = seat,
                             SeatNumber = $"{(char)('A' + row - 1)}{seat}",
@@ -158,7 +213,7 @@ namespace EventBooking.API.Controllers
                             Y = 100 + (row - 1) * 40,
                             Width = 30,
                             Height = 35,
-                            Price = premiumSection.BasePrice,
+                            Price = premiumTicketType.Price,
                             Status = SeatStatus.Available
                         });
                     }
@@ -172,7 +227,7 @@ namespace EventBooking.API.Controllers
                         theaterSeats.Add(new Seat
                         {
                             EventId = theaterEvent.Id,
-                            SectionId = generalSection.Id,
+                            TicketTypeId = generalTicketType.Id,
                             Row = ((char)('A' + row - 1)).ToString(),
                             Number = seat,
                             SeatNumber = $"{(char)('A' + row - 1)}{seat}",
@@ -180,7 +235,7 @@ namespace EventBooking.API.Controllers
                             Y = 100 + (row - 1) * 40,
                             Width = 30,
                             Height = 35,
-                            Price = generalSection.BasePrice,
+                            Price = generalTicketType.Price,
                             Status = SeatStatus.Available
                         });
                     }
@@ -198,7 +253,6 @@ namespace EventBooking.API.Controllers
                     var newTable = new Table
                     {
                         EventId = diningEvent.Id,
-                        SectionId = frontSection.Id,
                         TableNumber = $"F{table}",
                         Capacity = 8,
                         X = 50 + ((table - 1) % 3) * 150,
@@ -206,7 +260,7 @@ namespace EventBooking.API.Controllers
                         Width = 100,
                         Height = 80,
                         Shape = "round",
-                        PricePerSeat = frontSection.BasePrice
+                        PricePerSeat = frontTicketType.Price
                     };
                     tables.Add(newTable);
                 }
@@ -217,7 +271,6 @@ namespace EventBooking.API.Controllers
                     var newTable = new Table
                     {
                         EventId = diningEvent.Id,
-                        SectionId = backSection.Id,
                         TableNumber = $"B{table}",
                         Capacity = 6,
                         X = 50 + ((table - 1) % 4) * 120,
@@ -225,7 +278,7 @@ namespace EventBooking.API.Controllers
                         Width = 80,
                         Height = 60,
                         Shape = "round",
-                        PricePerSeat = backSection.BasePrice
+                        PricePerSeat = backTicketType.Price
                     };
                     tables.Add(newTable);
                 }
@@ -242,7 +295,7 @@ namespace EventBooking.API.Controllers
                         {
                             EventId = diningEvent.Id,
                             TableId = table.Id,
-                            SectionId = table.SectionId,
+                            TicketTypeId = table.Seats.Any() ? table.Seats.First().TicketTypeId : null,
                             Row = table.TableNumber,
                             Number = seatNum,
                             SeatNumber = $"{table.TableNumber}-{seatNum}",
@@ -258,58 +311,8 @@ namespace EventBooking.API.Controllers
 
                 _context.Seats.AddRange(tableSeats);
 
-                // Create ticket types for all events
+                // Create ticket types for general admission events
                 var ticketTypes = new List<TicketType>();
-
-                // Theater event ticket types
-                ticketTypes.AddRange(new[]
-                {
-                    new TicketType
-                    {
-                        EventId = theaterEvent.Id,
-                        Type = "VIP",
-                        Price = vipSection.BasePrice,
-                        Description = "VIP section seating",
-                        Color = "#FFD700" // Gold color for VIP
-                    },
-                    new TicketType
-                    {
-                        EventId = theaterEvent.Id,
-                        Type = "Premium",
-                        Price = premiumSection.BasePrice,
-                        Description = "Premium section seating",
-                        Color = "#C0C0C0" // Silver color for Premium
-                    },
-                    new TicketType
-                    {
-                        EventId = theaterEvent.Id,
-                        Type = "General",
-                        Price = generalSection.BasePrice,
-                        Description = "General section seating",
-                        Color = "#CD7F32" // Bronze color for General
-                    }
-                });
-
-                // Dining event ticket types
-                ticketTypes.AddRange(new[]
-                {
-                    new TicketType
-                    {
-                        EventId = diningEvent.Id,
-                        Type = "Front Section",
-                        Price = frontSection.BasePrice,
-                        Description = "Premium front section tables",
-                        Color = "#FF6B6B" // Red color for front section
-                    },
-                    new TicketType
-                    {
-                        EventId = diningEvent.Id,
-                        Type = "Back Section",
-                        Price = backSection.BasePrice,
-                        Description = "Standard back section tables",
-                        Color = "#4ECDC4" // Teal color for back section
-                    }
-                });
 
                 // General admission events ticket types
                 // Concert event
@@ -399,7 +402,7 @@ namespace EventBooking.API.Controllers
                 _context.Tables.RemoveRange(_context.Tables);
                 _context.TicketTypes.RemoveRange(_context.TicketTypes);
                 _context.Events.RemoveRange(_context.Events);
-                _context.Sections.RemoveRange(_context.Sections);
+                _context.TicketTypes.RemoveRange(_context.TicketTypes);
                 _context.Venues.RemoveRange(_context.Venues);
 
                 await _context.SaveChangesAsync();

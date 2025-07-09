@@ -52,9 +52,13 @@ namespace EventBooking.API.Controllers
                 return NotFound("Event not found");
             }
 
+            // Synchronize Type and Name fields using the same value
+            string typeValue = dto.Type ?? "General Admission";
+            
             var ticketType = new TicketType
             {
-                Type = dto.Type,
+                Type = typeValue,
+                Name = typeValue, // Set Name field to same value as Type
                 Price = dto.Price,
                 Description = dto.Description,
                 EventId = dto.EventId,
@@ -95,6 +99,11 @@ namespace EventBooking.API.Controllers
             var eventEntity = await _context.Events
                 .Include(e => e.Venue)
                 .FirstOrDefaultAsync(e => e.Id == ticketType.EventId);
+
+            // Synchronize Type and Name fields
+            string typeValue = ticketType.Type ?? ticketType.Name ?? "General Admission";
+            ticketType.Type = typeValue;
+            ticketType.Name = typeValue;
 
             _context.Entry(ticketType).State = EntityState.Modified;
 

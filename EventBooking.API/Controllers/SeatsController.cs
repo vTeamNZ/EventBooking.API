@@ -40,9 +40,6 @@ namespace EventBooking.API.Controllers
                     .Include(e => e.Venue)
                     .Include(e => e.Seats)
                         .ThenInclude(s => s.TicketType)
-                    .Include(e => e.Tables)
-                        .ThenInclude(t => t.Seats)
-                            .ThenInclude(s => s.TicketType)
                     .FirstOrDefaultAsync(e => e.Id == eventId);
 
                 if (eventEntity == null)
@@ -54,7 +51,6 @@ namespace EventBooking.API.Controllers
                 Console.WriteLine($"Event found: {eventEntity.Title}, SeatSelectionMode: {eventEntity.SeatSelectionMode}");
                 Console.WriteLine($"Venue: {(eventEntity.Venue != null ? eventEntity.Venue.Name : "None")}");
                 Console.WriteLine($"Seats count: {eventEntity.Seats.Count}");
-                Console.WriteLine($"Tables count: {eventEntity.Tables.Count}");
                 Console.WriteLine($"Stage position: {eventEntity.StagePosition ?? "None"}");
                 
                 if (eventEntity.SeatSelectionMode != Models.SeatSelectionMode.EventHall)
@@ -91,7 +87,7 @@ namespace EventBooking.API.Controllers
                     TicketTypes = ticketTypes.Select(tt => new TicketTypeDTO
                     {
                         Id = tt.Id,
-                        Name = tt.Type,
+                        Name = !string.IsNullOrEmpty(tt.Name) ? tt.Name : tt.Type,
                         Price = tt.Price,
                         Description = tt.Description ?? string.Empty,
                         Color = tt.Color,
@@ -122,48 +118,28 @@ namespace EventBooking.API.Controllers
                     Y = s.Y,
                     Width = s.Width,
                     Height = s.Height,
-                    Price = s.Price,
+                    Price = s.TicketType?.Price ?? 0, // Use TicketType price instead of seat price
                     Status = s.Status,
                     TicketTypeId = s.TicketTypeId,
+                    TicketType = s.TicketType != null ? new TicketTypeDTO
+                    {
+                        Id = s.TicketType.Id,
+                        Name = !string.IsNullOrEmpty(s.TicketType.Name) ? s.TicketType.Name : s.TicketType.Type,
+                        Price = s.TicketType.Price,
+                        Description = s.TicketType.Description ?? string.Empty,
+                        Color = s.TicketType.Color,
+                        SeatRowAssignments = s.TicketType.SeatRowAssignments
+                    } : null,
                     TableId = s.TableId,
                     ReservedUntil = s.ReservedUntil
                 }).ToList();
 
-                // Add tables
-                response.Tables = eventEntity.Tables.Select(t => new TableDTO
-                {
-                    Id = t.Id,
-                    TableNumber = t.TableNumber,
-                    Capacity = t.Capacity,
-                    X = t.X,
-                    Y = t.Y,
-                    Width = t.Width,
-                    Height = t.Height,
-                    Shape = t.Shape,
-                    PricePerSeat = t.PricePerSeat,
-                    TablePrice = t.TablePrice,
-                    AvailableSeats = t.Seats.Count(s => s.Status == SeatStatus.Available),
-                    Seats = t.Seats.Select(s => new SeatDTO
-                    {
-                        Id = s.Id,
-                        SeatNumber = s.SeatNumber,
-                        Row = s.Row,
-                        Number = s.Number,
-                        X = s.X,
-                        Y = s.Y,
-                        Width = s.Width,
-                        Height = s.Height,
-                        Price = s.Price,
-                        Status = s.Status,
-                        TicketTypeId = s.TicketTypeId,
-                        TableId = s.TableId,
-                        ReservedUntil = s.ReservedUntil
-                    }).ToList()
-                }).ToList();
+                // Tables have been removed, initialize with empty list
+                response.Tables = new List<TableDTO>();
 
                 Console.WriteLine($"Returning response with mode: {response.Mode}");
                 Console.WriteLine($"Response has {response.Seats.Count} seats");
-                Console.WriteLine($"Response has {response.Tables?.Count ?? 0} tables");
+                Console.WriteLine($"Response has {response.TicketTypes.Count} ticket types");
                 Console.WriteLine($"========== End of GetEventSeatLayout for eventId: {eventId} ==========");
 
                 return Ok(response);
@@ -186,6 +162,7 @@ namespace EventBooking.API.Controllers
                 // Use explicit locking with UPDLOCK to prevent concurrent reservations
                 var seat = await _context.Seats
                     .FromSqlRaw("SELECT * FROM Seats WITH (UPDLOCK) WHERE Id = {0}", request.SeatId)
+                    .Include(s => s.TicketType) // Include TicketType to get the price
                     .FirstOrDefaultAsync();
                 
                 if (seat == null)
@@ -218,7 +195,7 @@ namespace EventBooking.API.Controllers
                     message = "Seat reserved successfully", 
                     reservedUntil = seat.ReservedUntil,
                     seatNumber = seat.SeatNumber,
-                    price = seat.Price
+                    price = seat.TicketType?.Price ?? 0 // Use TicketType price
                 });
             }
             catch (Exception ex)
@@ -261,6 +238,7 @@ namespace EventBooking.API.Controllers
                         AND s.Id IN ({1})",
                         request.TableId,
                         string.Join(",", seatIds))
+                    .Include(s => s.TicketType) // Include TicketType to get the price
                     .ToListAsync();
 
                 // Check for existing reservations
@@ -299,7 +277,7 @@ namespace EventBooking.API.Controllers
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
                 
-                var totalPrice = seatsToReserve.Sum(s => s.Price);
+                var totalPrice = seatsToReserve.Sum(s => s.TicketType?.Price ?? 0); // Use TicketType price
                 return Ok(new { 
                     message = $"Table {table.TableNumber} reserved successfully", 
                     reservedSeats = seatsToReserve.Count,
@@ -339,8 +317,6 @@ namespace EventBooking.API.Controllers
         public async Task<ActionResult<PricingResponse>> GetEventPricing(int eventId)
         {
             var eventEntity = await _context.Events
-                .Include(e => e.Venue)
-                    .ThenInclude(v => v!.Sections)
                 .Include(e => e.TicketTypes)
                 .FirstOrDefaultAsync(e => e.Id == eventId);
 
@@ -351,13 +327,13 @@ namespace EventBooking.API.Controllers
             {
                 EventId = eventId,
                 Mode = eventEntity.SeatSelectionMode,
-                SectionPricing = eventEntity.Venue?.Sections?.ToDictionary(s => s.Name, s => s.BasePrice) ?? new Dictionary<string, decimal>(),
                 TicketTypes = eventEntity.TicketTypes.Select(tt => new TicketTypeDTO
                 {
                     Id = tt.Id,
-                    Name = tt.Type, // TicketType uses 'Type' property
+                    Name = !string.IsNullOrEmpty(tt.Name) ? tt.Name : tt.Type,
                     Price = tt.Price,
-                    Description = tt.Description ?? ""
+                    Description = tt.Description ?? "",
+                    Color = tt.Color
                 }).ToList()
             };
 
@@ -475,7 +451,7 @@ namespace EventBooking.API.Controllers
         {
             var seats = await _context.Seats
                 .Where(s => s.EventId == eventId)
-                .Include(s => s.Section)
+                .Include(s => s.TicketType)
                 // TODO: Fix reservations relationship
                 //.Include(s => s.Reservations)
                 .Select(s => new
@@ -488,12 +464,13 @@ namespace EventBooking.API.Controllers
                     s.Y,
                     s.Width,
                     s.Height,
-                    s.Price,
-                    Section = new
+                    Price = s.TicketType != null ? s.TicketType.Price : 0, // Use TicketType.Price instead of Seats.Price
+                    TicketType = new
                     {
-                        s.Section.Id,
-                        s.Section.Name,
-                        s.Section.Color
+                        s.TicketType.Id,
+                        Name = !string.IsNullOrEmpty(s.TicketType.Name) ? s.TicketType.Name : s.TicketType.Type,
+                        s.TicketType.Color,
+                        s.TicketType.Price
                     },
                     Status = s.Status.ToString() // Using the seat's Status property directly
                 })
@@ -540,7 +517,7 @@ namespace EventBooking.API.Controllers
                 .Where(tt => !string.IsNullOrEmpty(tt.SeatRowAssignments))
                 .Select(tt => new
                 {
-                    TicketType = tt.Type,
+                    TicketType = !string.IsNullOrEmpty(tt.Name) ? tt.Name : tt.Type,
                     Color = tt.Color,
                     RowAssignments = tt.SeatRowAssignments
                 })
