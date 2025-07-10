@@ -160,6 +160,10 @@ builder.Services.AddCors(options =>
 // Add Authorization
 builder.Services.AddAuthorization();
 
+// Add BookingConfirmationService
+builder.Services.AddHttpClient();
+builder.Services.AddScoped<IBookingConfirmationService, BookingConfirmationService>();
+
 var app = builder.Build();
 
 // Global error handling

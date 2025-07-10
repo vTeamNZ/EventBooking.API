@@ -28,6 +28,7 @@ namespace EventBooking.API.Data
         public DbSet<BookingFood> BookingFoods { get; set; }
         public DbSet<SeatReservation> SeatReservations { get; set; }
         public DbSet<Venue> Venues { get; set; }
+        public DbSet<ETicketBooking> EventBookings { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
