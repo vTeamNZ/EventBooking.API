@@ -595,5 +595,89 @@ namespace EventBooking.API.Controllers
                 return StatusCode(500, new { message = "An error occurred while reserving seats", error = ex.Message });
             }
         }
+
+        // POST: api/Seats/mark-booked
+        [HttpPost("mark-booked")]
+        public async Task<ActionResult> MarkSeatsAsBooked([FromBody] MarkSeatsBookedRequest request)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                Console.WriteLine($"========== MarkSeatsAsBooked Called ==========");
+                Console.WriteLine($"EventId: {request.EventId}");
+                Console.WriteLine($"OrganizerEmail: {request.OrganizerEmail}");
+                Console.WriteLine($"SeatNumbers: [{string.Join(", ", request.SeatNumbers)}]");
+                
+                // Validate input
+                if (request.SeatNumbers == null || !request.SeatNumbers.Any())
+                {
+                    Console.WriteLine("ERROR: No seat numbers provided");
+                    return BadRequest("No seat numbers provided");
+                }
+
+                // Get all seats with a lock to prevent concurrent modifications
+                var seatNumbersParam = string.Join("','", request.SeatNumbers.Select(s => s.Replace("'", "''")));
+                Console.WriteLine($"SQL query will use seat numbers: '{seatNumbersParam}'");
+                
+                var seats = await _context.Seats
+                    .FromSqlRaw($@"
+                        SELECT s.* 
+                        FROM Seats s WITH (UPDLOCK) 
+                        WHERE s.EventId = {{0}} 
+                        AND s.SeatNumber IN ('{seatNumbersParam}')",
+                        request.EventId)
+                    .ToListAsync();
+
+                Console.WriteLine($"Found {seats.Count} seats matching the criteria");
+
+                if (!seats.Any())
+                {
+                    // Let's also check what seats exist for this event
+                    var allSeatsForEvent = await _context.Seats
+                        .Where(s => s.EventId == request.EventId)
+                        .Select(s => s.SeatNumber)
+                        .ToListAsync();
+                    
+                    Console.WriteLine($"All seats for event {request.EventId}: [{string.Join(", ", allSeatsForEvent)}]");
+                    return NotFound("No matching seats found");
+                }
+
+                // Check if all requested seats were found
+                var foundSeatNumbers = seats.Select(s => s.SeatNumber).ToHashSet();
+                var missingSeatNumbers = request.SeatNumbers.Where(sn => !foundSeatNumbers.Contains(sn)).ToList();
+                
+                if (missingSeatNumbers.Any())
+                {
+                    return BadRequest($"The following seats were not found: {string.Join(", ", missingSeatNumbers)}");
+                }
+
+                // Mark all seats as booked
+                foreach (var seat in seats)
+                {
+                    seat.Status = SeatStatus.Booked;
+                    seat.ReservedBy = request.OrganizerEmail;
+                    seat.ReservedUntil = DateTime.UtcNow.AddDays(1); // Set expiry for cleanup if needed
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                Console.WriteLine($"Successfully marked {seats.Count} seats as booked");
+                Console.WriteLine($"========== End MarkSeatsAsBooked ==========");
+
+                return Ok(new { 
+                    message = "Seats marked as booked successfully", 
+                    markedSeats = seats.Count,
+                    seatNumbers = seats.Select(s => s.SeatNumber).ToList()
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                Console.WriteLine($"ERROR in MarkSeatsAsBooked: {ex.Message}");
+                Console.WriteLine($"StackTrace: {ex.StackTrace}");
+                return StatusCode(500, new { message = "An error occurred while marking seats as booked", error = ex.Message });
+            }
+        }
     }
 }

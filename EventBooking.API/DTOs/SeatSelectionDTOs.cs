@@ -121,4 +121,11 @@ namespace EventBooking.API.DTOs
         public string SessionId { get; set; } = string.Empty;
         public int EventId { get; set; }
     }
+
+    public class MarkSeatsBookedRequest
+    {
+        public int EventId { get; set; }
+        public List<string> SeatNumbers { get; set; } = new List<string>();
+        public string OrganizerEmail { get; set; } = string.Empty;
+    }
 }
