@@ -262,6 +262,46 @@ namespace EventBooking.API.Controllers
                 return StatusCode(500, "Error retrieving users");
             }
         }
+
+        // PUT: api/Admin/seats/{seatId}/toggle-availability
+        [HttpPut("seats/{seatId}/toggle-availability")]
+        public async Task<IActionResult> ToggleSeatAvailability(int seatId)
+        {
+            try
+            {
+                var seat = await _context.Seats.FindAsync(seatId);
+                if (seat == null)
+                {
+                    return NotFound(new { message = "Seat not found" });
+                }
+
+                // Only allow toggling between Available and Unavailable
+                // Don't allow changing Reserved or Booked seats
+                if (seat.Status == SeatStatus.Reserved || seat.Status == SeatStatus.Booked)
+                {
+                    return BadRequest(new { message = "Cannot change status of reserved or booked seats" });
+                }
+
+                // Toggle between Available and Unavailable
+                seat.Status = seat.Status == SeatStatus.Available ? SeatStatus.Unavailable : SeatStatus.Available;
+                
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation($"Admin toggled seat {seatId} status to {seat.Status}");
+
+                return Ok(new { 
+                    message = "Seat status updated successfully",
+                    seatId = seatId,
+                    newStatus = seat.Status.ToString(),
+                    statusValue = (int)seat.Status
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error toggling seat availability for seat {seatId}");
+                return StatusCode(500, new { message = "An error occurred while updating seat status" });
+            }
+        }
     }
 
     public class VerifyOrganizerRequest
