@@ -114,4 +114,11 @@ namespace EventBooking.API.DTOs
         public string Color { get; set; } = string.Empty; // Added color for UI display
         public string? SeatRowAssignments { get; set; } // Added for frontend to know which rows are for this ticket type
     }
+
+    public class ReserveMultipleSeatsRequest
+    {
+        public List<int> SeatIds { get; set; } = new List<int>();
+        public string SessionId { get; set; } = string.Empty;
+        public int EventId { get; set; }
+    }
 }

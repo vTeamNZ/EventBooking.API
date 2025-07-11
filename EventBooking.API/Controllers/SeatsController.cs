@@ -541,5 +541,59 @@ namespace EventBooking.API.Controllers
                 }
             });
         }
+
+        // POST: api/Seats/reserve-multiple
+        [HttpPost("reserve-multiple")]
+        public async Task<ActionResult> ReserveMultipleSeats([FromBody] ReserveMultipleSeatsRequest request)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                // Use explicit locking with UPDLOCK to prevent concurrent reservations
+                var seatIds = string.Join(",", request.SeatIds);
+                var seats = await _context.Seats
+                    .FromSqlRaw($"SELECT * FROM Seats WITH (UPDLOCK) WHERE Id IN ({seatIds})")
+                    .Include(s => s.TicketType) // Include TicketType to get the price
+                    .ToListAsync();
+                
+                if (!seats.Any())
+                    return NotFound("No seats found");
+
+                if (seats.Count != request.SeatIds.Count)
+                    return BadRequest("Not all requested seats were found");
+
+                // Double-check all seats are available
+                var unavailableSeats = seats.Where(s => s.Status != SeatStatus.Available).ToList();
+                if (unavailableSeats.Any())
+                {
+                    return BadRequest($"The following seats are not available: {string.Join(", ", unavailableSeats.Select(s => s.SeatNumber))}");
+                }
+
+                // Reserve all seats for 10 minutes
+                foreach (var seat in seats)
+                {
+                    seat.Status = SeatStatus.Reserved;
+                    seat.ReservedUntil = DateTime.UtcNow.AddMinutes(10);
+                    seat.ReservedBy = request.SessionId;
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new { 
+                    message = "All seats reserved successfully", 
+                    reservedUntil = seats.First().ReservedUntil,
+                    seats = seats.Select(s => new {
+                        seatNumber = s.SeatNumber,
+                        price = s.TicketType?.Price ?? 0
+                    }).ToList()
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(500, new { message = "An error occurred while reserving seats", error = ex.Message });
+            }
+        }
     }
 }
