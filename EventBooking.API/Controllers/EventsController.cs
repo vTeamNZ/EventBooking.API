@@ -239,6 +239,40 @@ namespace EventBooking.API.Controllers
             }
         }
 
+        // GET: api/Events/by-organizer
+        [Authorize(Roles = "Organizer")]
+        [HttpGet("by-organizer")]
+        public async Task<ActionResult<IEnumerable<Event>>> GetOrganizerEvents()
+        {
+            var logger = HttpContext.RequestServices.GetRequiredService<ILogger<EventsController>>();
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            
+            if (userId == null)
+            {
+                logger.LogWarning("GetOrganizerEvents: User ID not found in claims");
+                return BadRequest(new { message = "Authentication error. Please try logging in again." });
+            }
+
+            var organizer = await _context.Organizers
+                .FirstOrDefaultAsync(o => o.UserId == userId);
+            
+            if (organizer == null)
+            {
+                logger.LogWarning("GetOrganizerEvents: No organizer profile found for user {UserId}", userId);
+                return BadRequest(new { message = "No organizer profile found. Please complete your organizer registration." });
+            }
+
+            var events = await _context.Events
+                .Include(e => e.Venue)
+                .Include(e => e.TicketTypes)
+                .Where(e => e.OrganizerId == organizer.Id)
+                .OrderByDescending(e => e.Date)
+                .ToListAsync();
+
+            logger.LogInformation("GetOrganizerEvents: Found {Count} events for organizer {OrganizerId}", events.Count, organizer.Id);
+            return events;
+        }
+
         // PUT: api/Events/5
         // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
         [AllowAnonymous]
