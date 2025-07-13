@@ -679,5 +679,37 @@ namespace EventBooking.API.Controllers
                 return StatusCode(500, new { message = "An error occurred while marking seats as booked", error = ex.Message });
             }
         }
+
+        // GET: api/Seats/reservations/{eventId}/{sessionId}
+        [HttpGet("reservations/{eventId}/{sessionId}")]
+        public async Task<ActionResult<IEnumerable<ReservedSeatDTO>>> GetReservationsBySession(int eventId, string sessionId)
+        {
+            // Get seats that are currently reserved by this session
+            var reservedSeats = await _context.Seats
+                .Include(s => s.TicketType)
+                .Where(s => s.EventId == eventId 
+                    && s.Status == SeatStatus.Reserved 
+                    && s.ReservedBy == sessionId
+                    && s.ReservedUntil > DateTime.UtcNow)
+                .Select(s => new ReservedSeatDTO
+                {
+                    SeatId = s.Id,
+                    Row = s.Row,
+                    Number = s.Number,
+                    SeatNumber = s.SeatNumber,
+                    Price = s.TicketType.Price,
+                    TicketType = s.TicketType,
+                    ReservedUntil = s.ReservedUntil,
+                    Status = s.Status
+                })
+                .ToListAsync();
+
+            if (!reservedSeats.Any())
+            {
+                return NotFound("No reservations found for this session");
+            }
+
+            return Ok(reservedSeats);
+        }
     }
 }

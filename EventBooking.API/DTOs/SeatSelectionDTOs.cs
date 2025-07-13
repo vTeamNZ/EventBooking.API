@@ -73,8 +73,11 @@ namespace EventBooking.API.DTOs
 
     public class ReserveSeatRequest
     {
+        public int EventId { get; set; }
         public int SeatId { get; set; }
         public string SessionId { get; set; } = string.Empty;
+        public string Row { get; set; } = string.Empty;
+        public int Number { get; set; }
     }
 
     public class ReserveRowSeatRequest
