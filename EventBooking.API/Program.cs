@@ -13,6 +13,15 @@ using System.IdentityModel.Tokens.Jwt;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Configure for IIS integration
+builder.WebHost.UseIISIntegration();
+
+// Only configure URLs when not running under IIS in development
+if (builder.Environment.IsDevelopment())
+{
+    builder.WebHost.UseUrls("http://localhost:5000");
+}
+
 // Force configuration to be rebuilt
 builder.Configuration.SetBasePath(Directory.GetCurrentDirectory())
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
@@ -95,7 +104,13 @@ if (string.IsNullOrEmpty(connectionString))
 Console.WriteLine($"Using connection string from config: {connectionString}");
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
-    options.UseSqlServer(connectionString);
+    options.UseSqlServer(connectionString, sqlOptions =>
+    {
+        sqlOptions.EnableRetryOnFailure(
+            maxRetryCount: 3,
+            maxRetryDelay: TimeSpan.FromSeconds(10),
+            errorNumbersToAdd: null);
+    });
     options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
 });
 
@@ -162,8 +177,8 @@ builder.Services.AddAuthentication(options =>
         ValidateAudience = true,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "http://localhost:5290",
-        ValidAudience = builder.Configuration["Jwt:Audience"] ?? "http://localhost:3000",
+        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "https://kiwilanka.co.nz",
+        ValidAudience = builder.Configuration["Jwt:Audience"] ?? "https://kiwilanka.co.nz",
         IssuerSigningKey = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? "ThisIsASuperUltraSecretJWTKeyWithMinimum32Bytes")),
         ClockSkew = TimeSpan.Zero
@@ -271,12 +286,12 @@ app.Use(async (context, next) =>
 });
 
 // Configure the HTTP request pipeline
-if (app.Environment.IsDevelopment() || app.Environment.IsStaging())
+if (app.Environment.IsDevelopment() || app.Environment.IsStaging() || app.Environment.IsProduction())
 {
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
-        c.SwaggerEndpoint("/swagger/v1/swagger.json", "Event Booking API v1");
+        c.SwaggerEndpoint("/api/swagger/v1/swagger.json", "Event Booking API v1");
         c.RoutePrefix = string.Empty; // Set Swagger UI at the app's root
     });
 }

@@ -10,7 +10,7 @@ using System.Text.Json;
 namespace EventBooking.API.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     public class VenuesController : ControllerBase
     {
         private readonly AppDbContext _context;

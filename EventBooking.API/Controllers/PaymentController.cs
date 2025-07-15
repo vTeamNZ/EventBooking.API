@@ -14,7 +14,7 @@ using EventBooking.API.Services; // Add this line
 namespace EventBooking.API.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     public class PaymentController : ControllerBase
     {
         private readonly IConfiguration _configuration;

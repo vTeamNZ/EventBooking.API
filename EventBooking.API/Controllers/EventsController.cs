@@ -16,7 +16,7 @@ namespace EventBooking.API.Controllers
 {
     //[Authorize(Roles = "Admin,Organizer")]
     [Authorize(Roles = "Admin,Organizer")]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class EventsController : ControllerBase
     {

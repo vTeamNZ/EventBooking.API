@@ -8,7 +8,7 @@ using System.Security.Claims;
 namespace EventBooking.API.Controllers
 {
     [Authorize(Roles = "Admin")]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class AdminController : ControllerBase
     {

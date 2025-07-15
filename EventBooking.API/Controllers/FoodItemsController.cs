@@ -5,7 +5,7 @@ using EventBooking.API.Models;
 
 namespace EventBooking.API.Controllers
 {
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class FoodItemsController : ControllerBase
     {

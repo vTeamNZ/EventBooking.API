@@ -10,7 +10,7 @@ namespace EventBooking.API.Controllers
     // Restore proper Admin authorization for seeding in production
     // Comment this line for testing if needed
     [Authorize(Roles = "Admin")]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class SeedController : ControllerBase
     {

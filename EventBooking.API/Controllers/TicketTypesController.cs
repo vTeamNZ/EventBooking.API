@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging;
 
 namespace EventBooking.API.Controllers
 {
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class TicketTypesController : ControllerBase
     {

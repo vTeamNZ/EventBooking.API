@@ -15,7 +15,7 @@ namespace EventBooking.API.Controllers
 {
     // Temporarily allowing anonymous access for testing
     [AllowAnonymous]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class SeatsController : ControllerBase
     {

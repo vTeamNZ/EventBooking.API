@@ -17,7 +17,7 @@ namespace EventBooking.API.Controllers
     //[Authorize(Roles = "Admin,Attendee")]
     [AllowAnonymous]
     //[Authorize]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class ReservationsController : ControllerBase
     {

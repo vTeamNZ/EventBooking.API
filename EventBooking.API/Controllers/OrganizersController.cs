@@ -13,7 +13,7 @@ using System.Collections;
 namespace EventBooking.API.Controllers
 {
     [Authorize]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class OrganizersController : ControllerBase
     {

@@ -12,7 +12,7 @@ using System.Threading.Tasks;
 namespace EventBooking.API.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     public class SeatingController : ControllerBase
     {
         private readonly AppDbContext _context;
