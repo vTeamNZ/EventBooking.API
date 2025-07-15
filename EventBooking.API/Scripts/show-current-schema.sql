@@ -1,0 +1,24 @@
+-- Check exact current schema
+USE kwdb01;
+GO
+
+PRINT 'Current TicketTypes table structure:';
+SELECT 
+    COLUMN_NAME,
+    DATA_TYPE,
+    IS_NULLABLE,
+    COLUMN_DEFAULT
+FROM INFORMATION_SCHEMA.COLUMNS 
+WHERE TABLE_NAME = 'TicketTypes'
+ORDER BY ORDINAL_POSITION;
+
+PRINT '';
+PRINT 'Current Seats table structure:';
+SELECT 
+    COLUMN_NAME,
+    DATA_TYPE,
+    IS_NULLABLE,
+    COLUMN_DEFAULT
+FROM INFORMATION_SCHEMA.COLUMNS 
+WHERE TABLE_NAME = 'Seats'
+ORDER BY ORDINAL_POSITION;

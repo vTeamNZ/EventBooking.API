@@ -1,6 +1,8 @@
 using EventBooking.API.Data;
+using EventBooking.API.DTOs;
 using EventBooking.API.Models;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -14,11 +16,19 @@ namespace EventBooking.API.Controllers
     {
         private readonly AppDbContext _context;
         private readonly ILogger<AdminController> _logger;
+        private readonly UserManager<ApplicationUser> _userManager;
+        private readonly RoleManager<IdentityRole> _roleManager;
 
-        public AdminController(AppDbContext context, ILogger<AdminController> logger)
+        public AdminController(
+            AppDbContext context, 
+            ILogger<AdminController> logger,
+            UserManager<ApplicationUser> userManager,
+            RoleManager<IdentityRole> roleManager)
         {
             _context = context;
             _logger = logger;
+            _userManager = userManager ?? throw new ArgumentNullException(nameof(userManager));
+            _roleManager = roleManager ?? throw new ArgumentNullException(nameof(roleManager));
         }
 
         // GET: api/Admin/dashboard-stats
@@ -233,36 +243,6 @@ namespace EventBooking.API.Controllers
             }
         }
 
-        // GET: api/Admin/users
-        [HttpGet("users")]
-        public async Task<IActionResult> GetAllUsers()
-        {
-            try
-            {
-                var users = await _context.Users
-                    .Select(u => new
-                    {
-                        u.Id,
-                        u.UserName,
-                        u.Email,
-                        u.FullName,
-                        u.Role,
-                        u.EmailConfirmed,
-                        u.LockoutEnd,
-                        IsOrganizer = _context.Organizers.Any(o => o.UserId == u.Id)
-                    })
-                    .OrderBy(u => u.Email)
-                    .ToListAsync();
-
-                return Ok(users);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error retrieving users list");
-                return StatusCode(500, "Error retrieving users");
-            }
-        }
-
         // PUT: api/Admin/seats/{seatId}/toggle-availability
         [HttpPut("seats/{seatId}/toggle-availability")]
         public async Task<IActionResult> ToggleSeatAvailability(int seatId)
@@ -300,6 +280,162 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, $"Error toggling seat availability for seat {seatId}");
                 return StatusCode(500, new { message = "An error occurred while updating seat status" });
+            }
+        }
+
+        // === USER MANAGEMENT ENDPOINTS ===
+
+        [HttpGet("users")]
+        public async Task<IActionResult> GetAllUsers()
+        {
+            try
+            {
+                var users = await _userManager.Users
+                    .Select(u => new
+                    {
+                        u.Id,
+                        u.Email,
+                        u.FullName,
+                        u.Role,
+                        u.EmailConfirmed,
+                        u.LockoutEnabled,
+                        u.LockoutEnd
+                    })
+                    .ToListAsync();
+
+                // Get roles for each user
+                var usersWithRoles = new List<object>();
+                foreach (var user in users)
+                {
+                    var userEntity = await _userManager.FindByIdAsync(user.Id);
+                    var roles = await _userManager.GetRolesAsync(userEntity!);
+                    
+                    usersWithRoles.Add(new
+                    {
+                        user.Id,
+                        user.Email,
+                        user.FullName,
+                        user.Role,
+                        user.EmailConfirmed,
+                        user.LockoutEnabled,
+                        user.LockoutEnd,
+                        Roles = roles
+                    });
+                }
+
+                return Ok(usersWithRoles);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving users");
+                return StatusCode(500, new { message = "An error occurred while retrieving users" });
+            }
+        }
+
+        [HttpPost("create-admin")]
+        public async Task<IActionResult> CreateAdminUser([FromBody] RegisterDTO dto)
+        {
+            try
+            {
+                // Ensure Admin role exists
+                if (!await _roleManager.RoleExistsAsync("Admin"))
+                {
+                    await _roleManager.CreateAsync(new IdentityRole("Admin"));
+                }
+
+                var user = new ApplicationUser
+                {
+                    FullName = dto.FullName,
+                    Email = dto.Email,
+                    UserName = dto.Email,
+                    Role = "Admin",
+                    EmailConfirmed = true
+                };
+
+                var result = await _userManager.CreateAsync(user, dto.Password);
+
+                if (!result.Succeeded)
+                    return BadRequest(result.Errors);
+
+                await _userManager.AddToRoleAsync(user, "Admin");
+
+                return Ok(new { 
+                    message = "Admin user created successfully",
+                    userId = user.Id,
+                    role = "Admin"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating admin user");
+                return StatusCode(500, new { message = "An error occurred while creating admin user" });
+            }
+        }
+
+        [HttpPost("create-organizer")]
+        public async Task<IActionResult> CreateOrganizerUser([FromBody] RegisterDTO dto)
+        {
+            try
+            {
+                // Ensure Organizer role exists
+                if (!await _roleManager.RoleExistsAsync("Organizer"))
+                {
+                    await _roleManager.CreateAsync(new IdentityRole("Organizer"));
+                }
+
+                var user = new ApplicationUser
+                {
+                    FullName = dto.FullName,
+                    Email = dto.Email,
+                    UserName = dto.Email,
+                    Role = "Organizer",
+                    EmailConfirmed = true
+                };
+
+                var result = await _userManager.CreateAsync(user, dto.Password);
+
+                if (!result.Succeeded)
+                    return BadRequest(result.Errors);
+
+                await _userManager.AddToRoleAsync(user, "Organizer");
+
+                return Ok(new { 
+                    message = "Organizer user created successfully",
+                    userId = user.Id,
+                    role = "Organizer"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error creating organizer user");
+                return StatusCode(500, new { message = "An error occurred while creating organizer user" });
+            }
+        }
+
+        [HttpPost("reset-user-password")]
+        public async Task<IActionResult> ResetUserPassword([FromBody] ResetPasswordDTO dto)
+        {
+            try
+            {
+                var user = await _userManager.FindByEmailAsync(dto.Email);
+                if (user == null)
+                    return NotFound("User not found");
+
+                // Remove existing password and set new one
+                var removePasswordResult = await _userManager.RemovePasswordAsync(user);
+                if (!removePasswordResult.Succeeded)
+                    return BadRequest("Failed to remove old password");
+
+                var addPasswordResult = await _userManager.AddPasswordAsync(user, dto.NewPassword);
+                if (!addPasswordResult.Succeeded)
+                    return BadRequest(addPasswordResult.Errors);
+
+                return Ok(new { message = "Password reset successfully" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error resetting user password");
+                return StatusCode(500, new { message = "An error occurred while resetting password" });
             }
         }
     }

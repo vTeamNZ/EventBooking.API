@@ -36,14 +36,10 @@ namespace EventBooking.API.Controllers
         }
 
         [HttpPost("create-admin")]
+        [AllowAnonymous] // Temporary - will be restricted after admin panel is set up
         public async Task<IActionResult> CreateAdmin([FromBody] RegisterDTO dto)
         {
-            // Check if an admin user already exists
-            var existingAdmin = await _userManager.GetUsersInRoleAsync("Admin");
-            if (existingAdmin.Any())
-            {
-                return BadRequest("Admin user already exists");
-            }
+            // Allow multiple admins - restriction removed
 
             var user = new ApplicationUser
             {
@@ -258,6 +254,73 @@ namespace EventBooking.API.Controllers
             await _context.SaveChangesAsync();
 
             return Ok(new { message = "Profile updated successfully" });
+        }
+
+        [HttpPost("reset-password")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDTO dto)
+        {
+            var user = await _userManager.FindByEmailAsync(dto.Email);
+            if (user == null)
+                return NotFound("User not found");
+
+            // Remove existing password and set new one
+            var removePasswordResult = await _userManager.RemovePasswordAsync(user);
+            if (!removePasswordResult.Succeeded)
+                return BadRequest("Failed to remove old password");
+
+            var addPasswordResult = await _userManager.AddPasswordAsync(user, dto.NewPassword);
+            if (!addPasswordResult.Succeeded)
+                return BadRequest(addPasswordResult.Errors);
+
+            return Ok(new { message = "Password reset successfully" });
+        }
+
+        [HttpPost("fix-admin-password")]
+        [AllowAnonymous] // Temporary endpoint to fix the broken admin
+        public async Task<IActionResult> FixAdminPassword()
+        {
+            var adminUser = await _userManager.FindByEmailAsync("admin@kiwilanka.co.nz");
+            if (adminUser == null)
+                return NotFound("Admin user not found");
+
+            // Remove existing password and set correct one
+            var removePasswordResult = await _userManager.RemovePasswordAsync(adminUser);
+            if (!removePasswordResult.Succeeded)
+                return BadRequest("Failed to remove old password");
+
+            var addPasswordResult = await _userManager.AddPasswordAsync(adminUser, "Admin@123456");
+            if (!addPasswordResult.Succeeded)
+                return BadRequest(addPasswordResult.Errors);
+
+            return Ok(new { message = "Admin password fixed successfully" });
+        }
+
+        [HttpPost("create-admin-unrestricted")]
+        [AllowAnonymous] // Temporary endpoint for initial admin creation
+        public async Task<IActionResult> CreateAdminUnrestricted([FromBody] RegisterDTO dto)
+        {
+            // This endpoint allows creating admins without restrictions (for initial setup)
+            var user = new ApplicationUser
+            {
+                FullName = dto.FullName,
+                Email = dto.Email,
+                UserName = dto.Email,
+                Role = "Admin"
+            };
+
+            var result = await _userManager.CreateAsync(user, dto.Password);
+
+            if (!result.Succeeded)
+                return BadRequest(result.Errors);
+
+            await _userManager.AddToRoleAsync(user, "Admin");
+
+            return Ok(new { 
+                message = "Admin user created successfully",
+                userId = user.Id,
+                role = "Admin"
+            });
         }
     }
 }

@@ -112,7 +112,15 @@ namespace EventBooking.API.Services
             {
                 // Try to find the frontend public folder
                 var currentDir = Directory.GetCurrentDirectory();
-                var frontendPath = Path.Combine(Path.GetDirectoryName(currentDir) ?? "", "event-booking-frontend", "public", folder);
+                var parentDir = Path.GetDirectoryName(currentDir);
+                
+                if (string.IsNullOrEmpty(parentDir))
+                {
+                    _logger.LogWarning("Could not determine parent directory of current directory: {CurrentDir}", currentDir);
+                    return;
+                }
+                
+                var frontendPath = Path.Combine(parentDir, "event-booking-frontend", "public", folder);
                 
                 if (Directory.Exists(frontendPath))
                 {
@@ -141,7 +149,15 @@ namespace EventBooking.API.Services
             try
             {
                 var currentDir = Directory.GetCurrentDirectory();
-                var frontendPath = Path.Combine(Path.GetDirectoryName(currentDir) ?? "", "event-booking-frontend", "public", folder);
+                var parentDir = Path.GetDirectoryName(currentDir);
+                
+                if (string.IsNullOrEmpty(parentDir))
+                {
+                    _logger.LogWarning("Could not determine parent directory for frontend deletion");
+                    return;
+                }
+                
+                var frontendPath = Path.Combine(parentDir, "event-booking-frontend", "public", folder);
                 
                 if (Directory.Exists(frontendPath))
                 {
