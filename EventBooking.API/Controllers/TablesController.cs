@@ -11,8 +11,8 @@ using Microsoft.AspNetCore.Authorization;
 
 namespace EventBooking.API.Controllers
 {
-    [Authorize(Roles = "Admin,Attendee")]
-    //[AllowAnonymous]
+    //[Authorize(Roles = "Admin,Attendee")]
+    [AllowAnonymous]
     [Route("api/[controller]")]
     [ApiController]
     public class TablesController : ControllerBase
@@ -43,6 +43,18 @@ namespace EventBooking.API.Controllers
             }
 
             return table;
+        }
+
+        // GET: api/Tables/event/5/layout
+        [HttpGet("event/{eventId}/layout")]
+        public async Task<ActionResult<IEnumerable<Table>>> GetTablesForEvent(int eventId)
+        {
+            var tables = await _context.Tables
+                .Where(t => t.EventId == eventId)
+                .Include(t => t.Seats)
+                .ToListAsync();
+
+            return tables;
         }
 
         // PUT: api/Tables/5

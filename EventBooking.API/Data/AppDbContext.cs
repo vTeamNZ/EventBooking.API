@@ -26,6 +26,9 @@ namespace EventBooking.API.Data
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<BookingTicket> BookingTickets { get; set; }
         public DbSet<BookingFood> BookingFoods { get; set; }
+        public DbSet<SeatReservation> SeatReservations { get; set; }
+        public DbSet<Venue> Venues { get; set; }
+        public DbSet<ETicketBooking> EventBookings { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -46,7 +49,124 @@ namespace EventBooking.API.Data
                 .HasOne(b => b.Event)
                 .WithMany()
                 .HasForeignKey(b => b.EventId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Configure Venue relationships
+            modelBuilder.Entity<Event>()
+                .HasOne(e => e.Venue)
+                .WithMany(v => v.Events)
+                .HasForeignKey(e => e.VenueId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // Configure TicketType relationships
+            modelBuilder.Entity<TicketType>(entity =>
+            {
+                entity.Property(t => t.Color)
+                    .HasMaxLength(7)
+                    .HasDefaultValue("#007bff");
+
+                entity.Property(t => t.Name)
+                    .HasMaxLength(100)
+                    .IsRequired();
+
+                entity.Property(t => t.Type)
+                    .HasMaxLength(50)
+                    .IsRequired();
+
+                entity.Property(t => t.Price)
+                    .HasPrecision(18, 2);
+
+                entity.HasOne(tt => tt.Event)
+                    .WithMany(e => e.TicketTypes)
+                    .HasForeignKey(tt => tt.EventId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });            // Configure Seat relationships
+            modelBuilder.Entity<Seat>(entity =>
+            {
+                entity.Property(s => s.Row)
+                    .HasMaxLength(10)
+                    .IsRequired();
+                entity.Property(s => s.SeatNumber)
+                    .HasMaxLength(20)
+                    .IsRequired();
+                entity.HasOne(s => s.Event)
+                    .WithMany(e => e.Seats)
+                    .HasForeignKey(s => s.EventId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(s => s.TicketType)
+                    .WithMany(tt => tt.Seats)
+                    .HasForeignKey(s => s.TicketTypeId)
+                    .OnDelete(DeleteBehavior.Restrict)
+                    .IsRequired();
+            });
+            
+            modelBuilder.Entity<Seat>()
+                .HasOne(s => s.Table)
+                .WithMany(t => t.Seats)
+                .HasForeignKey(s => s.TableId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            // Configure Table relationships
+            modelBuilder.Entity<Table>()
+                .HasOne(t => t.Event)
+                .WithMany(e => e.Tables)
+                .HasForeignKey(t => t.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            // Configure decimal precision
+            modelBuilder.Entity<Event>()
+                .Property(e => e.Price)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<FoodItem>()
+                .Property(f => f.Price)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<TicketType>()
+                .Property(t => t.Price)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.Price)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.X)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.Y)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.Width)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Seat>()
+                .Property(s => s.Height)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.X)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.Y)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.Width)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.Height)
+                .HasPrecision(18, 2);
+
+            modelBuilder.Entity<Table>()
+                .Property(t => t.PricePerSeat)
+                .HasPrecision(18, 2);            modelBuilder.Entity<Table>()
+                .Property(t => t.TablePrice)
+                .HasPrecision(18, 2);
 
             modelBuilder.Entity<BookingTicket>()
                 .HasOne(bt => bt.Booking)
@@ -72,23 +192,39 @@ namespace EventBooking.API.Data
                 .HasForeignKey(bf => bf.FoodItemId)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            // Configure SeatReservation
+            modelBuilder.Entity<SeatReservation>()
+                .HasOne(sr => sr.Event)
+                .WithMany()
+                .HasForeignKey(sr => sr.EventId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<SeatReservation>()
+                .HasIndex(sr => new { sr.EventId, sr.Row, sr.Number })
+                .IsUnique();
+
+            // Add composite index for looking up active reservations
+            modelBuilder.Entity<SeatReservation>()
+                .HasIndex(sr => new { sr.EventId, sr.IsConfirmed, sr.ExpiresAt });
+
             // Optional: Ensure delete behaviors and FK relationship
             modelBuilder.Entity<Organizer>()
                 .HasOne(o => o.User)
                 .WithOne()
                 .HasForeignKey<Organizer>(o => o.UserId);
 
+            // Configure Reservation relationships explicitly to fix shadow property issue
             modelBuilder.Entity<Reservation>()
-                .HasOne(r => r.User)
+                .HasOne<ApplicationUser>(r => r.User)
                 .WithMany()
                 .HasForeignKey(r => r.UserId)
-                .OnDelete(DeleteBehavior.Restrict); // 👈 disables cascade for User
+                .OnDelete(DeleteBehavior.Restrict);
 
             modelBuilder.Entity<Reservation>()
                 .HasOne(r => r.Event)
                 .WithMany()
                 .HasForeignKey(r => r.EventId)
-                .OnDelete(DeleteBehavior.Cascade); // Optional: you can leave this one
+                .OnDelete(DeleteBehavior.Cascade);
 
         }
 

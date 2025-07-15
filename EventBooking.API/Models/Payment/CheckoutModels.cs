@@ -33,6 +33,7 @@ namespace EventBooking.API.Models.Payment
 
         public List<TicketLineItem>? TicketDetails { get; set; }
         public List<FoodLineItem>? FoodDetails { get; set; }
+        public List<string>? SelectedSeats { get; set; }
     }
 
     public class TicketLineItem
@@ -78,5 +79,8 @@ namespace EventBooking.API.Models.Payment
         public long? AmountTotal { get; set; }
         public string PaymentId { get; set; }
         public string EventTitle { get; set; }
+        public List<string> BookedSeats { get; set; } = new List<string>();
+        public string CustomerName { get; set; }
+        public string TicketReference { get; set; }
     }
 }

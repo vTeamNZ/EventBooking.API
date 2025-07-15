@@ -7,12 +7,14 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using EventBooking.API.Data;
 using EventBooking.API.Models;
+using EventBooking.API.DTOs;
 using Microsoft.AspNetCore.Authorization;
+using System.Text.Json;
 
 namespace EventBooking.API.Controllers
 {
-    [Authorize(Roles = "Admin,Attendee")]
-    //[AllowAnonymous]
+    // Temporarily allowing anonymous access for testing
+    [AllowAnonymous]
     [Route("api/[controller]")]
     [ApiController]
     public class SeatsController : ControllerBase
@@ -22,6 +24,341 @@ namespace EventBooking.API.Controllers
         public SeatsController(AppDbContext context)
         {
             _context = context;
+        }
+
+        // GET: api/Seats/event/{eventId}/layout
+        [HttpGet("event/{eventId}/layout")]
+        public async Task<ActionResult<SeatLayoutResponse>> GetEventSeatLayout(int eventId)
+        {
+            Console.WriteLine($"========== GetEventSeatLayout Called for eventId: {eventId} ==========");
+            Console.WriteLine($"Request: {Request.Method} {Request.Path} from {Request.Headers["Origin"]}");
+            Console.WriteLine($"User-Agent: {Request.Headers["User-Agent"]}");
+            
+            try
+            {
+                var eventEntity = await _context.Events
+                    .Include(e => e.Venue)
+                    .Include(e => e.Seats)
+                        .ThenInclude(s => s.TicketType)
+                    .FirstOrDefaultAsync(e => e.Id == eventId);
+
+                if (eventEntity == null)
+                {
+                    Console.WriteLine($"Event with ID {eventId} not found");
+                    return NotFound();
+                }
+                
+                Console.WriteLine($"Event found: {eventEntity.Title}, SeatSelectionMode: {eventEntity.SeatSelectionMode}");
+                Console.WriteLine($"Venue: {(eventEntity.Venue != null ? eventEntity.Venue.Name : "None")}");
+                Console.WriteLine($"Seats count: {eventEntity.Seats.Count}");
+                Console.WriteLine($"Stage position: {eventEntity.StagePosition ?? "None"}");
+                
+                if (eventEntity.SeatSelectionMode != Models.SeatSelectionMode.EventHall)
+                {
+                    Console.WriteLine($"WARNING: Event has SeatSelectionMode {eventEntity.SeatSelectionMode} but this API was called");
+                }
+
+                // Clear expired reservations
+                await ClearExpiredReservations(eventId);
+
+                // Get ticket types for coloring seats
+                var ticketTypes = await _context.TicketTypes
+                    .Where(tt => tt.EventId == eventId)
+                    .ToListAsync();
+                
+                var response = new SeatLayoutResponse
+                {
+                    EventId = eventId,
+                    Mode = eventEntity.SeatSelectionMode,
+                    Venue = eventEntity.Venue != null ? new SeatLayoutVenueDTO
+                    {
+                        Id = eventEntity.Venue.Id,
+                        Name = eventEntity.Venue.Name,
+                        Width = eventEntity.Venue.Width,
+                        Height = eventEntity.Venue.Height
+                    } : null,
+                    // Include aisle information
+                    HasHorizontalAisles = eventEntity.Venue?.HasHorizontalAisles ?? false,
+                    HorizontalAisleRows = eventEntity.Venue?.HorizontalAisleRows ?? string.Empty,
+                    HasVerticalAisles = eventEntity.Venue?.HasVerticalAisles ?? false,
+                    VerticalAisleSeats = eventEntity.Venue?.VerticalAisleSeats ?? string.Empty,
+                    AisleWidth = eventEntity.Venue?.AisleWidth ?? 2,
+                    // Add ticket types to the response for seat coloring
+                    TicketTypes = ticketTypes.Select(tt => new TicketTypeDTO
+                    {
+                        Id = tt.Id,
+                        Name = !string.IsNullOrEmpty(tt.Name) ? tt.Name : tt.Type,
+                        Price = tt.Price,
+                        Description = tt.Description ?? string.Empty,
+                        Color = tt.Color,
+                        SeatRowAssignments = tt.SeatRowAssignments
+                    }).ToList()
+                };
+
+                // Add stage information if available
+                if (!string.IsNullOrEmpty(eventEntity.StagePosition))
+                {
+                    try
+                    {
+                        var stageData = JsonSerializer.Deserialize<StageDTO>(eventEntity.StagePosition);
+                        response.Stage = stageData;
+                    }
+                    catch { /* Ignore invalid JSON */ }
+                }
+
+                // Add seats
+                Console.WriteLine($"Processing {eventEntity.Seats.Count} seats for response");
+                response.Seats = eventEntity.Seats.Select(s => new SeatDTO
+                {
+                    Id = s.Id,
+                    SeatNumber = s.SeatNumber,
+                    Row = s.Row,
+                    Number = s.Number,
+                    X = s.X,
+                    Y = s.Y,
+                    Width = s.Width,
+                    Height = s.Height,
+                    Price = s.TicketType?.Price ?? 0, // Use TicketType price instead of seat price
+                    Status = s.Status,
+                    TicketTypeId = s.TicketTypeId,
+                    TicketType = s.TicketType != null ? new TicketTypeDTO
+                    {
+                        Id = s.TicketType.Id,
+                        Name = !string.IsNullOrEmpty(s.TicketType.Name) ? s.TicketType.Name : s.TicketType.Type,
+                        Price = s.TicketType.Price,
+                        Description = s.TicketType.Description ?? string.Empty,
+                        Color = s.TicketType.Color,
+                        SeatRowAssignments = s.TicketType.SeatRowAssignments
+                    } : null,
+                    TableId = s.TableId,
+                    ReservedUntil = s.ReservedUntil
+                }).ToList();
+
+                // Tables have been removed, initialize with empty list
+                response.Tables = new List<TableDTO>();
+
+                Console.WriteLine($"Returning response with mode: {response.Mode}");
+                Console.WriteLine($"Response has {response.Seats.Count} seats");
+                Console.WriteLine($"Response has {response.TicketTypes.Count} ticket types");
+                Console.WriteLine($"========== End of GetEventSeatLayout for eventId: {eventId} ==========");
+
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ERROR in GetEventSeatLayout: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                return StatusCode(500, new { message = "An error occurred while processing the seat layout" });
+            }
+        }
+
+        // POST: api/Seats/reserve
+        [HttpPost("reserve")]
+        public async Task<ActionResult> ReserveSeat([FromBody] ReserveSeatRequest request)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                // Use explicit locking with UPDLOCK to prevent concurrent reservations
+                var seat = await _context.Seats
+                    .FromSqlRaw("SELECT * FROM Seats WITH (UPDLOCK) WHERE Id = {0}", request.SeatId)
+                    .Include(s => s.TicketType) // Include TicketType to get the price
+                    .FirstOrDefaultAsync();
+                
+                if (seat == null)
+                    return NotFound("Seat not found");
+
+                // Double-check the status after getting the lock
+                if (seat.Status != SeatStatus.Available)
+                    return BadRequest("Seat is not available");
+
+                // Check if there's any existing reservation
+                // TODO: Fix reservation model compatibility
+                /*
+                var existingReservation = await _context.Reservations
+                    .AnyAsync(r => r.SeatId == request.SeatId && 
+                                 (r.Status == "Reserved" || r.Status == "Booked"));
+                
+                if (existingReservation)
+                    return BadRequest("Seat is already reserved or booked");
+                */
+
+                // Reserve seat for 10 minutes
+                seat.Status = SeatStatus.Reserved;
+                seat.ReservedUntil = DateTime.UtcNow.AddMinutes(10);
+                seat.ReservedBy = request.SessionId;
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new { 
+                    message = "Seat reserved successfully", 
+                    reservedUntil = seat.ReservedUntil,
+                    seatNumber = seat.SeatNumber,
+                    price = seat.TicketType?.Price ?? 0 // Use TicketType price
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(500, new { message = "An error occurred while reserving the seat", error = ex.Message });
+            }
+        }
+
+        // POST: api/Seats/reserve-table
+        [HttpPost("reserve-table")]
+        public async Task<ActionResult> ReserveTable([FromBody] ReserveTableRequest request)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                // Use explicit locking to prevent concurrent reservations
+                var table = await _context.Tables
+                    .FromSqlRaw(@"
+                        SELECT t.* 
+                        FROM Tables t WITH (UPDLOCK)
+                        WHERE t.Id = {0}", request.TableId)
+                    .Include(t => t.Seats)
+                    .FirstOrDefaultAsync();
+                
+                if (table == null)
+                    return NotFound("Table not found");
+
+                List<Seat> seatsToReserve;
+                var seatIds = request.FullTable 
+                    ? table.Seats.Select(s => s.Id).ToList() 
+                    : request.SeatIds;
+
+                // Get all seats with a lock to prevent concurrent modifications
+                var seats = await _context.Seats
+                    .FromSqlRaw(@"
+                        SELECT s.* 
+                        FROM Seats s WITH (UPDLOCK) 
+                        WHERE s.TableId = {0} 
+                        AND s.Id IN ({1})",
+                        request.TableId,
+                        string.Join(",", seatIds))
+                    .Include(s => s.TicketType) // Include TicketType to get the price
+                    .ToListAsync();
+
+                // Check for existing reservations
+                // TODO: Fix reservation model compatibility
+                /*
+                var existingReservations = await _context.Reservations
+                    .AnyAsync(r => seatIds.Contains(r.SeatId) && 
+                                 (r.Status == "Reserved" || r.Status == "Booked"));
+                
+                if (existingReservations)
+                    return BadRequest("Some seats are already reserved or booked");
+                */
+
+                if (request.FullTable)
+                {
+                    seatsToReserve = seats.Where(s => s.Status == SeatStatus.Available).ToList();
+                    if (seatsToReserve.Count != table.Capacity)
+                        return BadRequest("Table is not fully available");
+                }
+                else
+                {
+                    seatsToReserve = seats.Where(s => request.SeatIds.Contains(s.Id) && 
+                                                     s.Status == SeatStatus.Available).ToList();
+                    if (seatsToReserve.Count != request.SeatIds.Count)
+                        return BadRequest("Some seats are not available");
+                }
+
+                // Reserve all seats
+                foreach (var seat in seatsToReserve)
+                {
+                    seat.Status = SeatStatus.Reserved;
+                    seat.ReservedUntil = DateTime.UtcNow.AddMinutes(10);
+                    seat.ReservedBy = request.SessionId;
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+                
+                var totalPrice = seatsToReserve.Sum(s => s.TicketType?.Price ?? 0); // Use TicketType price
+                return Ok(new { 
+                    message = $"Table {table.TableNumber} reserved successfully", 
+                    reservedSeats = seatsToReserve.Count,
+                    totalPrice = totalPrice,
+                    reservedUntil = seatsToReserve.First().ReservedUntil
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(500, new { message = "An error occurred while reserving the table", error = ex.Message });
+            }
+        }
+
+        // POST: api/Seats/release
+        [HttpPost("release")]
+        public async Task<ActionResult> ReleaseSeat([FromBody] ReleaseSeatRequest request)
+        {
+            var seat = await _context.Seats
+                .Where(s => s.Id == request.SeatId && s.ReservedBy == request.SessionId)
+                .FirstOrDefaultAsync();
+
+            if (seat == null)
+                return NotFound("Seat not found or not reserved by this session");
+
+            seat.Status = SeatStatus.Available;
+            seat.ReservedUntil = null;
+            seat.ReservedBy = null;
+
+            await _context.SaveChangesAsync();
+            
+            return Ok(new { message = "Seat released successfully" });
+        }
+
+        // GET: api/Seats/pricing/{eventId}
+        [HttpGet("pricing/{eventId}")]
+        public async Task<ActionResult<PricingResponse>> GetEventPricing(int eventId)
+        {
+            var eventEntity = await _context.Events
+                .Include(e => e.TicketTypes)
+                .FirstOrDefaultAsync(e => e.Id == eventId);
+
+            if (eventEntity == null)
+                return NotFound();
+
+            var response = new PricingResponse
+            {
+                EventId = eventId,
+                Mode = eventEntity.SeatSelectionMode,
+                TicketTypes = eventEntity.TicketTypes.Select(tt => new TicketTypeDTO
+                {
+                    Id = tt.Id,
+                    Name = !string.IsNullOrEmpty(tt.Name) ? tt.Name : tt.Type,
+                    Price = tt.Price,
+                    Description = tt.Description ?? "",
+                    Color = tt.Color
+                }).ToList()
+            };
+
+            return Ok(response);
+        }
+
+        private async Task ClearExpiredReservations(int eventId)
+        {
+            var expiredSeats = await _context.Seats
+                .Where(s => s.EventId == eventId && 
+                           s.Status == SeatStatus.Reserved && 
+                           s.ReservedUntil < DateTime.UtcNow)
+                .ToListAsync();
+
+            foreach (var seat in expiredSeats)
+            {
+                seat.Status = SeatStatus.Available;
+                seat.ReservedUntil = null;
+                seat.ReservedBy = null;
+            }
+
+            if (expiredSeats.Any())
+            {
+                await _context.SaveChangesAsync();
+            }
         }
 
         // GET: api/Seats
@@ -106,6 +443,273 @@ namespace EventBooking.API.Controllers
         private bool SeatExists(int id)
         {
             return _context.Seats.Any(e => e.Id == id);
+        }
+
+        // GET: api/Seats/event/{eventId}
+        [HttpGet("event/{eventId}")]
+        public async Task<ActionResult<IEnumerable<Seat>>> GetSeatsByEventId(int eventId)
+        {
+            var seats = await _context.Seats
+                .Where(s => s.EventId == eventId)
+                .Include(s => s.TicketType)
+                // TODO: Fix reservations relationship
+                //.Include(s => s.Reservations)
+                .Select(s => new
+                {
+                    s.Id,
+                    s.SeatNumber,
+                    s.Row,
+                    s.Number,
+                    s.X,
+                    s.Y,
+                    s.Width,
+                    s.Height,
+                    Price = s.TicketType != null ? s.TicketType.Price : 0, // Use TicketType.Price instead of Seats.Price
+                    TicketType = new
+                    {
+                        s.TicketType.Id,
+                        Name = !string.IsNullOrEmpty(s.TicketType.Name) ? s.TicketType.Name : s.TicketType.Type,
+                        s.TicketType.Color,
+                        s.TicketType.Price
+                    },
+                    Status = s.Status.ToString() // Using the seat's Status property directly
+                })
+                .ToListAsync();
+
+            if (!seats.Any())
+            {
+                return NotFound($"No seats found for event with ID {eventId}");
+            }
+
+            return Ok(seats);
+        }
+
+        // GET: api/Seats/event/{eventId}/allocation-status
+        [HttpGet("event/{eventId}/allocation-status")]
+        public async Task<ActionResult> GetSeatAllocationStatus(int eventId)
+        {
+            var eventEntity = await _context.Events
+                .Include(e => e.Venue)
+                .Include(e => e.TicketTypes)
+                .FirstOrDefaultAsync(e => e.Id == eventId);
+
+            if (eventEntity == null)
+            {
+                return NotFound("Event not found");
+            }
+
+            var seats = await _context.Seats
+                .Where(s => s.EventId == eventId)
+                .GroupBy(s => s.Row)
+                .Select(g => new
+                {
+                    Row = g.Key,
+                    TotalSeats = g.Count(),
+                    AvailableSeats = g.Count(s => s.Status == SeatStatus.Available),
+                    ReservedSeats = g.Count(s => s.Status == SeatStatus.Reserved || s.IsReserved),
+                    BookedSeats = g.Count(s => s.Status == SeatStatus.Booked),
+                    UnavailableSeats = g.Count(s => s.Status == SeatStatus.Unavailable)
+                })
+                .OrderBy(r => r.Row)
+                .ToListAsync();
+
+            var ticketTypeAllocations = eventEntity.TicketTypes
+                .Where(tt => !string.IsNullOrEmpty(tt.SeatRowAssignments))
+                .Select(tt => new
+                {
+                    TicketType = !string.IsNullOrEmpty(tt.Name) ? tt.Name : tt.Type,
+                    Color = tt.Color,
+                    RowAssignments = tt.SeatRowAssignments
+                })
+                .ToList();
+
+            return Ok(new
+            {
+                EventId = eventId,
+                EventTitle = eventEntity.Title,
+                VenueName = eventEntity.Venue?.Name,
+                SeatSelectionMode = eventEntity.SeatSelectionMode.ToString(),
+                RowStatus = seats,
+                TicketTypeAllocations = ticketTypeAllocations,
+                Summary = new
+                {
+                    TotalSeats = seats.Sum(r => r.TotalSeats),
+                    TotalAvailable = seats.Sum(r => r.AvailableSeats),
+                    TotalReserved = seats.Sum(r => r.ReservedSeats),
+                    TotalBooked = seats.Sum(r => r.BookedSeats),
+                    TotalUnavailable = seats.Sum(r => r.UnavailableSeats)
+                }
+            });
+        }
+
+        // POST: api/Seats/reserve-multiple
+        [HttpPost("reserve-multiple")]
+        public async Task<ActionResult> ReserveMultipleSeats([FromBody] ReserveMultipleSeatsRequest request)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                // Use explicit locking with UPDLOCK to prevent concurrent reservations
+                var seatIds = string.Join(",", request.SeatIds);
+                var seats = await _context.Seats
+                    .FromSqlRaw($"SELECT * FROM Seats WITH (UPDLOCK) WHERE Id IN ({seatIds})")
+                    .Include(s => s.TicketType) // Include TicketType to get the price
+                    .ToListAsync();
+                
+                if (!seats.Any())
+                    return NotFound("No seats found");
+
+                if (seats.Count != request.SeatIds.Count)
+                    return BadRequest("Not all requested seats were found");
+
+                // Double-check all seats are available
+                var unavailableSeats = seats.Where(s => s.Status != SeatStatus.Available).ToList();
+                if (unavailableSeats.Any())
+                {
+                    return BadRequest($"The following seats are not available: {string.Join(", ", unavailableSeats.Select(s => s.SeatNumber))}");
+                }
+
+                // Reserve all seats for 10 minutes
+                foreach (var seat in seats)
+                {
+                    seat.Status = SeatStatus.Reserved;
+                    seat.ReservedUntil = DateTime.UtcNow.AddMinutes(10);
+                    seat.ReservedBy = request.SessionId;
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new { 
+                    message = "All seats reserved successfully", 
+                    reservedUntil = seats.First().ReservedUntil,
+                    seats = seats.Select(s => new {
+                        seatNumber = s.SeatNumber,
+                        price = s.TicketType?.Price ?? 0
+                    }).ToList()
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(500, new { message = "An error occurred while reserving seats", error = ex.Message });
+            }
+        }
+
+        // POST: api/Seats/mark-booked
+        [HttpPost("mark-booked")]
+        public async Task<ActionResult> MarkSeatsAsBooked([FromBody] MarkSeatsBookedRequest request)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                Console.WriteLine($"========== MarkSeatsAsBooked Called ==========");
+                Console.WriteLine($"EventId: {request.EventId}");
+                Console.WriteLine($"OrganizerEmail: {request.OrganizerEmail}");
+                Console.WriteLine($"SeatNumbers: [{string.Join(", ", request.SeatNumbers)}]");
+                
+                // Validate input
+                if (request.SeatNumbers == null || !request.SeatNumbers.Any())
+                {
+                    Console.WriteLine("ERROR: No seat numbers provided");
+                    return BadRequest("No seat numbers provided");
+                }
+
+                // Get all seats with a lock to prevent concurrent modifications
+                var seatNumbersParam = string.Join("','", request.SeatNumbers.Select(s => s.Replace("'", "''")));
+                Console.WriteLine($"SQL query will use seat numbers: '{seatNumbersParam}'");
+                
+                var seats = await _context.Seats
+                    .FromSqlRaw($@"
+                        SELECT s.* 
+                        FROM Seats s WITH (UPDLOCK) 
+                        WHERE s.EventId = {{0}} 
+                        AND s.SeatNumber IN ('{seatNumbersParam}')",
+                        request.EventId)
+                    .ToListAsync();
+
+                Console.WriteLine($"Found {seats.Count} seats matching the criteria");
+
+                if (!seats.Any())
+                {
+                    // Let's also check what seats exist for this event
+                    var allSeatsForEvent = await _context.Seats
+                        .Where(s => s.EventId == request.EventId)
+                        .Select(s => s.SeatNumber)
+                        .ToListAsync();
+                    
+                    Console.WriteLine($"All seats for event {request.EventId}: [{string.Join(", ", allSeatsForEvent)}]");
+                    return NotFound("No matching seats found");
+                }
+
+                // Check if all requested seats were found
+                var foundSeatNumbers = seats.Select(s => s.SeatNumber).ToHashSet();
+                var missingSeatNumbers = request.SeatNumbers.Where(sn => !foundSeatNumbers.Contains(sn)).ToList();
+                
+                if (missingSeatNumbers.Any())
+                {
+                    return BadRequest($"The following seats were not found: {string.Join(", ", missingSeatNumbers)}");
+                }
+
+                // Mark all seats as booked
+                foreach (var seat in seats)
+                {
+                    seat.Status = SeatStatus.Booked;
+                    seat.ReservedBy = request.OrganizerEmail;
+                    seat.ReservedUntil = DateTime.UtcNow.AddDays(1); // Set expiry for cleanup if needed
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                Console.WriteLine($"Successfully marked {seats.Count} seats as booked");
+                Console.WriteLine($"========== End MarkSeatsAsBooked ==========");
+
+                return Ok(new { 
+                    message = "Seats marked as booked successfully", 
+                    markedSeats = seats.Count,
+                    seatNumbers = seats.Select(s => s.SeatNumber).ToList()
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                Console.WriteLine($"ERROR in MarkSeatsAsBooked: {ex.Message}");
+                Console.WriteLine($"StackTrace: {ex.StackTrace}");
+                return StatusCode(500, new { message = "An error occurred while marking seats as booked", error = ex.Message });
+            }
+        }
+
+        // GET: api/Seats/reservations/{eventId}/{sessionId}
+        [HttpGet("reservations/{eventId}/{sessionId}")]
+        public async Task<ActionResult<IEnumerable<ReservedSeatDTO>>> GetReservationsBySession(int eventId, string sessionId)
+        {
+            // Get seats that are currently reserved by this session
+            var reservedSeats = await _context.Seats
+                .Include(s => s.TicketType)
+                .Where(s => s.EventId == eventId 
+                    && s.Status == SeatStatus.Reserved 
+                    && s.ReservedBy == sessionId
+                    && s.ReservedUntil > DateTime.UtcNow)
+                .Select(s => new ReservedSeatDTO
+                {
+                    SeatId = s.Id,
+                    Row = s.Row,
+                    Number = s.Number,
+                    SeatNumber = s.SeatNumber,
+                    Price = s.TicketType.Price,
+                    TicketType = s.TicketType,
+                    ReservedUntil = s.ReservedUntil,
+                    Status = s.Status
+                })
+                .ToListAsync();
+
+            if (!reservedSeats.Any())
+            {
+                return NotFound("No reservations found for this session");
+            }
+
+            return Ok(reservedSeats);
         }
     }
 }

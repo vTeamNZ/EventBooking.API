@@ -15,8 +15,8 @@ using System.Threading.Tasks;
 namespace EventBooking.API.Controllers
 {
     //[Authorize(Roles = "Admin,Attendee")]
-    // [AllowAnonymous]
-    [Authorize]
+    [AllowAnonymous]
+    //[Authorize]
     [Route("api/[controller]")]
     [ApiController]
     public class ReservationsController : ControllerBase
@@ -137,6 +137,207 @@ namespace EventBooking.API.Controllers
         private bool ReservationExists(int id)
         {
             return _context.Reservations.Any(e => e.Id == id);
+        }
+
+        // POST: api/Reservations/hold
+        [HttpPost("hold")]
+        public async Task<IActionResult> HoldSeats([FromBody] List<SeatHoldRequest> seatHolds)
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId))
+                return Unauthorized();
+
+            // Check if any seats are already reserved
+            foreach (var hold in seatHolds)
+            {
+                var existingReservation = await _context.Reservations
+                    .FirstOrDefaultAsync(r => r.EventId == hold.EventId && 
+                                            r.Row == hold.Row && 
+                                            r.Number == hold.Number && 
+                                            r.IsReserved);
+                
+                if (existingReservation != null)
+                {
+                    return BadRequest($"Seat {hold.Row}-{hold.Number} is already reserved");
+                }
+            }
+
+            // Create temporary holds (expires in 10 minutes)
+            var expiry = DateTime.UtcNow.AddMinutes(10);
+            var holds = seatHolds.Select(hold => new Reservation
+            {
+                EventId = hold.EventId,
+                Row = hold.Row,
+                Number = hold.Number,
+                IsReserved = false, // Temporary hold
+                UserId = userId,
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = expiry
+            }).ToList();
+
+            _context.Reservations.AddRange(holds);
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Seats held temporarily", expiresAt = expiry });
+        }
+
+        // POST: api/Reservations/release
+        [HttpPost("release")]
+        public async Task<IActionResult> ReleaseSeats([FromBody] List<SeatHoldRequest> seatHolds)
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId))
+                return Unauthorized();
+
+            foreach (var hold in seatHolds)
+            {
+                var reservation = await _context.Reservations
+                    .FirstOrDefaultAsync(r => r.EventId == hold.EventId && 
+                                            r.Row == hold.Row && 
+                                            r.Number == hold.Number && 
+                                            r.UserId == userId &&
+                                            !r.IsReserved); // Only temporary holds
+
+                if (reservation != null)
+                {
+                    _context.Reservations.Remove(reservation);
+                }
+            }
+
+            await _context.SaveChangesAsync();
+            return Ok(new { message = "Seats released" });
+        }
+
+        // GET: api/Reservations/event/5/status
+        [HttpGet("event/{eventId}/status")]
+        public async Task<ActionResult> GetReservationStatus(int eventId)
+        {
+            var reservations = await _context.Reservations
+                .Where(r => r.EventId == eventId)
+                .Select(r => new {
+                    r.Row,
+                    r.Number,
+                    r.IsReserved,
+                    r.UserId,
+                    r.ExpiresAt
+                })
+                .ToListAsync();
+
+            // Clean up expired holds
+            var expiredHolds = reservations
+                .Where(r => !r.IsReserved && r.ExpiresAt.HasValue && r.ExpiresAt < DateTime.UtcNow)
+                .ToList();
+
+            if (expiredHolds.Any())
+            {
+                var toRemove = await _context.Reservations
+                    .Where(r => r.EventId == eventId && 
+                              !r.IsReserved && 
+                              r.ExpiresAt.HasValue && 
+                              r.ExpiresAt < DateTime.UtcNow)
+                    .ToListAsync();
+                
+                _context.Reservations.RemoveRange(toRemove);
+                await _context.SaveChangesAsync();
+            }
+
+            var currentReservations = reservations
+                .Where(r => r.IsReserved || (r.ExpiresAt.HasValue && r.ExpiresAt >= DateTime.UtcNow))
+                .Select(r => new {
+                    seat = $"{r.Row}-{r.Number}",
+                    isReserved = r.IsReserved,
+                    isHeld = !r.IsReserved && r.ExpiresAt.HasValue && r.ExpiresAt >= DateTime.UtcNow,
+                    expiresAt = r.ExpiresAt
+                })
+                .ToList();
+
+            return Ok(currentReservations);
+        }
+
+        // POST: api/reservations/reserve-tickets
+        [HttpPost("reserve-tickets")]
+        [Authorize(Roles = "Admin,Organizer")]
+        public async Task<ActionResult> ReserveTicketsWithoutPayment([FromBody] TicketReservationRequest request)
+        {
+            if (request == null)
+            {
+                return BadRequest("Invalid reservation data");
+            }
+
+            try
+            {
+                // Create a new reservation
+                // TODO: Fix Reservation model - current model doesn't match expected properties
+                throw new NotImplementedException("Reservation creation needs to be updated to match the current Reservation model");
+                
+                /*
+                var reservation = new Reservation
+                {
+                    EventId = request.EventId,
+                    UserId = request.UserId,
+                    CustomerFirstName = request.CustomerDetails.FirstName,
+                    CustomerLastName = request.CustomerDetails.LastName,
+                    CustomerEmail = request.CustomerDetails.Email,
+                    CustomerPhone = request.CustomerDetails.Mobile,
+                    TotalAmount = request.TotalAmount,
+                    Status = "Reserved",
+                    CreatedAt = DateTime.UtcNow,
+                    ReservationCode = Guid.NewGuid().ToString("N").Substring(0, 8).ToUpper()
+                };
+                */
+                
+                /*
+                _context.Reservations.Add(reservation);
+                await _context.SaveChangesAsync();
+
+                // Add ticket details
+                foreach (var ticket in request.TicketDetails)
+                {
+                    for (int i = 0; i < ticket.Quantity; i++)
+                    {
+                        var reservedTicket = new ReservedTicket
+                        {
+                            ReservationId = reservation.Id,
+                            TicketTypeId = ticket.TicketTypeId,
+                            Price = ticket.Price
+                        };
+
+                        _context.ReservedTickets.Add(reservedTicket);
+                    }
+                }
+
+                // Add food details
+                foreach (var food in request.SelectedFoods)
+                {
+                    for (int i = 0; i < food.Quantity; i++)
+                    {
+                        var reservedFood = new ReservedFood
+                        {
+                            ReservationId = reservation.Id,
+                            FoodItemId = food.FoodItemId,
+                            Price = food.Price
+                        };
+
+                        _context.ReservedFoods.Add(reservedFood);
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new { 
+                    reservationCode = reservation.ReservationCode,
+                    message = "Reservation created successfully!" 
+                });
+                */
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { 
+                    Success = false, 
+                    Message = "An error occurred while reserving tickets",
+                    Error = ex.Message
+                });
+            }
         }
     }
 }

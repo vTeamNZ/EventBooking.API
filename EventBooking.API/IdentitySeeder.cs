@@ -1,17 +1,65 @@
-﻿using Microsoft.AspNetCore.Identity;
+﻿using EventBooking.API.Models;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace EventBooking.API
 {
     public static class IdentitySeeder
     {
-        public static async Task SeedRolesAsync(RoleManager<IdentityRole> roleManager)
+        public static async Task SeedAsync(IServiceProvider serviceProvider)
         {
-            string[] roles = { "Attendee", "Organizer", "Admin" };
+            var roleManager = serviceProvider.GetRequiredService<RoleManager<IdentityRole>>();
+            var userManager = serviceProvider.GetRequiredService<UserManager<ApplicationUser>>();
 
-            foreach (var role in roles)
+            // Seed Roles
+            string[] roleNames = { "Admin", "User", "Organizer" };
+            foreach (var roleName in roleNames)
             {
-                if (!await roleManager.RoleExistsAsync(role))
-                    await roleManager.CreateAsync(new IdentityRole(role));
+                var roleExist = await roleManager.RoleExistsAsync(roleName);
+                if (!roleExist)
+                {
+                    await roleManager.CreateAsync(new IdentityRole(roleName));
+                }
+            }
+
+            // Seed Admin User
+            var adminUser = await userManager.FindByEmailAsync("admin@kiwilanka.co.nz");
+            if (adminUser == null)
+            {
+                var user = new ApplicationUser
+                {
+                    UserName = "admin@kiwilanka.co.nz",
+                    Email = "admin@kiwilanka.co.nz",
+                    EmailConfirmed = true,
+                    FullName = "System Administrator",
+                    Role = "Admin"
+                };
+
+                var result = await userManager.CreateAsync(user, "Admin@123456");
+                if (result.Succeeded)
+                {
+                    await userManager.AddToRoleAsync(user, "Admin");
+                }
+            }
+
+            // Seed Test Organizer
+            var organizerUser = await userManager.FindByEmailAsync("organizer@kiwilanka.co.nz");
+            if (organizerUser == null)
+            {
+                var user = new ApplicationUser
+                {
+                    UserName = "organizer@kiwilanka.co.nz",
+                    Email = "organizer@kiwilanka.co.nz",
+                    EmailConfirmed = true,
+                    FullName = "Test Organizer",
+                    Role = "Organizer"
+                };
+
+                var result = await userManager.CreateAsync(user, "Organizer@123456");
+                if (result.Succeeded)
+                {
+                    await userManager.AddToRoleAsync(user, "Organizer");
+                }
             }
         }
     }
