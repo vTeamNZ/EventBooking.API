@@ -45,12 +45,13 @@ namespace EventBooking.API.Controllers
             var currentNZTime = _eventStatusService.GetCurrentNZTime();
             var currentDate = currentNZTime.Date;
 
+            // For public endpoint, only show ACTIVE events (status = 2)
             // Get all events with venue and ticket type information included
             var allEvents = await _context.Events
                 .Include(e => e.Venue)
                 .Include(e => e.Organizer)
                 .Include(e => e.TicketTypes)
-                .Where(e => e.Date.HasValue)
+                .Where(e => e.Date.HasValue && e.Status == EventStatus.Active) // Only active events for public
                 .OrderBy(e => e.Date)
                 .ToListAsync();
 
@@ -183,7 +184,8 @@ namespace EventBooking.API.Controllers
                     SeatSelectionMode = venue?.SeatSelectionMode ?? dto.SeatSelectionMode,
                     StagePosition = dto.StagePosition,
                     VenueId = dto.VenueId,
-                    IsActive = false // Events are inactive by default until approved by admin
+                    IsActive = false, // Keep for backward compatibility
+                    Status = EventStatus.Draft // Events start as draft for organizer testing
                 };
 
                 _context.Events.Add(newEvent);
@@ -222,7 +224,7 @@ namespace EventBooking.API.Controllers
 
                 return Ok(new { 
                     id = newEvent.Id,
-                    message = "Event created successfully. It will be visible after admin approval.",
+                    message = "Event created successfully as draft. You can test it privately before submitting for approval.",
                     eventData = newEvent,
                     seatsCreated = seatsCreated
                 });
@@ -447,6 +449,137 @@ namespace EventBooking.API.Controllers
             }
         }*/
         
+        // PUT: api/Events/{id}/submit-for-review
+        [Authorize(Roles = "Organizer")]
+        [HttpPut("{id}/submit-for-review")]
+        public async Task<IActionResult> SubmitEventForReview(int id)
+        {
+            var logger = HttpContext.RequestServices.GetRequiredService<ILogger<EventsController>>();
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            
+            if (userId == null)
+            {
+                return BadRequest(new { message = "Authentication error. Please try logging in again." });
+            }
+
+            var organizer = await _context.Organizers
+                .FirstOrDefaultAsync(o => o.UserId == userId);
+            
+            if (organizer == null)
+            {
+                return BadRequest(new { message = "No organizer profile found." });
+            }
+
+            var eventItem = await _context.Events
+                .FirstOrDefaultAsync(e => e.Id == id && e.OrganizerId == organizer.Id);
+            
+            if (eventItem == null)
+            {
+                return NotFound(new { message = "Event not found or you don't have permission to access it." });
+            }
+
+            if (eventItem.Status != EventStatus.Draft)
+            {
+                return BadRequest(new { message = "Only draft events can be submitted for review." });
+            }
+
+            eventItem.Status = EventStatus.Pending;
+            eventItem.IsActive = false; // Keep backward compatibility
+            await _context.SaveChangesAsync();
+
+            logger.LogInformation("Event {EventId} submitted for review by organizer {OrganizerId}", id, organizer.Id);
+
+            return Ok(new { 
+                message = "Event submitted for admin review successfully",
+                eventId = id,
+                status = "Pending"
+            });
+        }
+
+        // PUT: api/Events/{id}/return-to-draft
+        [Authorize(Roles = "Organizer")]
+        [HttpPut("{id}/return-to-draft")]
+        public async Task<IActionResult> ReturnEventToDraft(int id)
+        {
+            var logger = HttpContext.RequestServices.GetRequiredService<ILogger<EventsController>>();
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            
+            if (userId == null)
+            {
+                return BadRequest(new { message = "Authentication error. Please try logging in again." });
+            }
+
+            var organizer = await _context.Organizers
+                .FirstOrDefaultAsync(o => o.UserId == userId);
+            
+            if (organizer == null)
+            {
+                return BadRequest(new { message = "No organizer profile found." });
+            }
+
+            var eventItem = await _context.Events
+                .FirstOrDefaultAsync(e => e.Id == id && e.OrganizerId == organizer.Id);
+            
+            if (eventItem == null)
+            {
+                return NotFound(new { message = "Event not found or you don't have permission to access it." });
+            }
+
+            if (eventItem.Status != EventStatus.Pending && eventItem.Status != EventStatus.Inactive)
+            {
+                return BadRequest(new { message = $"Only pending or inactive events can be returned to draft. Current status: {eventItem.Status}" });
+            }
+
+            eventItem.Status = EventStatus.Draft;
+            eventItem.IsActive = false; // Keep backward compatibility
+            await _context.SaveChangesAsync();
+
+            logger.LogInformation("Event {EventId} returned to draft by organizer {OrganizerId}", id, organizer.Id);
+
+            return Ok(new { 
+                message = "Event returned to draft status successfully",
+                eventId = id,
+                status = "Draft"
+            });
+        }
+
+        // GET: api/Events/{id}/preview
+        [Authorize(Roles = "Organizer")]
+        [HttpGet("{id}/preview")]
+        public async Task<ActionResult<Event>> PreviewEvent(int id)
+        {
+            var logger = HttpContext.RequestServices.GetRequiredService<ILogger<EventsController>>();
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            
+            if (userId == null)
+            {
+                return BadRequest(new { message = "Authentication error. Please try logging in again." });
+            }
+
+            var organizer = await _context.Organizers
+                .FirstOrDefaultAsync(o => o.UserId == userId);
+            
+            if (organizer == null)
+            {
+                return BadRequest(new { message = "No organizer profile found." });
+            }
+
+            var eventItem = await _context.Events
+                .Include(e => e.Venue)
+                .Include(e => e.TicketTypes)
+                .Include(e => e.FoodItems)
+                .FirstOrDefaultAsync(e => e.Id == id && e.OrganizerId == organizer.Id);
+            
+            if (eventItem == null)
+            {
+                return NotFound(new { message = "Event not found or you don't have permission to access it." });
+            }
+
+            logger.LogInformation("Event {EventId} previewed by organizer {OrganizerId}", id, organizer.Id);
+
+            return eventItem;
+        }
+
         private bool EventExists(int id)
         {
             return _context.Events.Any(e => e.Id == id);

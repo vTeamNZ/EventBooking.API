@@ -48,6 +48,18 @@ builder.Logging.AddFile(Path.Combine(logsPath, "app-{Date}.log"));
 // Add services to the container.
 builder.Services.AddEndpointsApiExplorer();
 
+// Configure CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowFrontend", builder =>
+    {
+        builder.WithOrigins("https://kiwilanka.co.nz", "http://localhost:3000")
+               .AllowAnyMethod()
+               .AllowAnyHeader()
+               .AllowCredentials();
+    });
+});
+
 // Add ReservationCleanupService
 builder.Services.AddHostedService<ReservationCleanupService>();
 
@@ -122,6 +134,9 @@ builder.Services.AddScoped<IImageService, ImageService>();
 builder.Services.AddScoped<ISeatCreationService, SeatCreationService>();
 builder.Services.AddScoped<ISeatAllocationService, SeatAllocationService>();
 
+// Add Processing Fee Service
+builder.Services.AddScoped<IProcessingFeeService, ProcessingFeeService>();
+
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options => 
 {
@@ -185,17 +200,6 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
-// Configure CORS
-builder.Services.AddCors(options =>
-{
-    options.AddDefaultPolicy(builder =>
-    {
-        builder.SetIsOriginAllowed(origin => true)
-               .AllowAnyMethod()
-               .AllowAnyHeader();
-    });
-});
-
 // Add Authorization
 builder.Services.AddAuthorization();
 
@@ -204,6 +208,9 @@ builder.Services.AddHttpClient();
 builder.Services.AddScoped<IBookingConfirmationService, BookingConfirmationService>();
 
 var app = builder.Build();
+
+// Configure CORS middleware
+app.UseCors("AllowFrontend");
 
 // Global error handling
 app.Use(async (context, next) =>
@@ -297,8 +304,6 @@ if (app.Environment.IsDevelopment() || app.Environment.IsStaging() || app.Enviro
 }
 
 app.UseStaticFiles();
-
-app.UseCors();
 
 app.UseAuthentication();
 app.UseAuthorization();

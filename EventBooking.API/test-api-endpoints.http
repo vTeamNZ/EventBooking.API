@@ -1,0 +1,65 @@
+### Test the fixed Seat Reservation API
+### This file can be used with REST Client extension in VS Code or similar tools
+
+@apiUrl = https://kiwilanka.co.nz/api
+@eventId = 6
+@sessionId = test_session_{{$timestamp}}
+
+### 1. Get Event Layout (to find available seats)
+GET {{apiUrl}}/seats/event/{{eventId}}/layout
+Content-Type: application/json
+
+###
+
+### 2. Reserve a Seat (previously failing with 500 error)
+POST {{apiUrl}}/seats/reserve
+Content-Type: application/json
+
+{
+  "EventId": {{eventId}},
+  "SeatId": 763,
+  "SessionId": "{{sessionId}}",
+  "Row": "K",
+  "Number": 27
+}
+
+###
+
+### 3. Get Reservations by Session
+GET {{apiUrl}}/seats/reservations/{{eventId}}/{{sessionId}}
+Content-Type: application/json
+
+###
+
+### 4. Reserve Multiple Seats
+POST {{apiUrl}}/seats/reserve-multiple
+Content-Type: application/json
+
+{
+  "SeatIds": [763, 764],
+  "SessionId": "{{sessionId}}",
+  "EventId": {{eventId}}
+}
+
+###
+
+### 5. Release a Seat
+POST {{apiUrl}}/seats/release
+Content-Type: application/json
+
+{
+  "SeatId": 763,
+  "SessionId": "{{sessionId}}"
+}
+
+###
+
+### 6. Get Event Seat Allocation Status
+GET {{apiUrl}}/seats/event/{{eventId}}/allocation-status
+Content-Type: application/json
+
+###
+
+### 7. Test Health Check
+GET {{apiUrl}}/swagger
+Content-Type: application/json

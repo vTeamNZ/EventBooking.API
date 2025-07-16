@@ -8,6 +8,14 @@ namespace EventBooking.API.Models
         GeneralAdmission = 3
     }
 
+    public enum EventStatus
+    {
+        Draft = 0,      // Organizer can test, not visible to public or admin
+        Pending = 1,    // Submitted for admin review, visible to admin  
+        Active = 2,     // Live and public
+        Inactive = 3    // Deactivated by admin
+    }
+
     public class Event
     {
         public int Id { get; set; }
@@ -21,13 +29,19 @@ namespace EventBooking.API.Models
         public int? OrganizerId { get; set; }
         public Organizer? Organizer { get; set; }
         public string? ImageUrl { get; set; }
-        public bool IsActive { get; set; }
+        public bool IsActive { get; set; } // Keep for backward compatibility
+        public EventStatus Status { get; set; } = EventStatus.Draft;
 
         // Seat selection configuration
         public SeatSelectionMode SeatSelectionMode { get; set; } = SeatSelectionMode.GeneralAdmission;
         public int? VenueId { get; set; }
         public Venue? Venue { get; set; }
         public string? StagePosition { get; set; } // JSON: {"x": 50, "y": 10, "width": 100, "height": 20}
+
+        // Processing fee configuration
+        public decimal ProcessingFeePercentage { get; set; } = 0.0m;
+        public decimal ProcessingFeeFixedAmount { get; set; } = 0.0m;
+        public bool ProcessingFeeEnabled { get; set; } = false;
 
         // Navigation properties for ticket types and food items
         public ICollection<TicketType> TicketTypes { get; set; } = new List<TicketType>();

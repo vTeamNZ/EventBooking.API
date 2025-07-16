@@ -30,15 +30,15 @@ Set-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webS
 Set-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules/rule[@name='QR App Routes']/action" -Name "type" -Value "Rewrite"
 Set-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules/rule[@name='QR App Routes']/action" -Name "url" -Value "qrapp/{R:1}"
 
-# Rule 3: QR App API routes to /qrappapi application
+# Rule 3: QR App API routes to /qrapp-api application
 Add-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules" -Name "." -Value @{
     name = "QR App API Routes"
     stopProcessing = $true
 }
 
-Set-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules/rule[@name='QR App API Routes']/match" -Name "url" -Value "^qrappapi/(.*)"
+Set-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules/rule[@name='QR App API Routes']/match" -Name "url" -Value "^qrapp-api/(.*)"
 Set-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules/rule[@name='QR App API Routes']/action" -Name "type" -Value "Rewrite"
-Set-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules/rule[@name='QR App API Routes']/action" -Name "url" -Value "qrappapi/{R:1}"
+Set-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules/rule[@name='QR App API Routes']/action" -Name "url" -Value "qrapp-api/{R:1}"
 
 # Rule 4: Default route to frontend (catch-all for SPA)
 Add-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules" -Name "." -Value @{
@@ -63,7 +63,7 @@ Add-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webS
 
 Add-WebConfigurationProperty -PSPath "IIS:\Sites\$siteName" -Filter "system.webServer/rewrite/rules/rule[@name='Frontend SPA Routes']/conditions" -Name "." -Value @{
     input = "{REQUEST_URI}"
-    pattern = "^/(api|qrapp|qrappapi)"
+    pattern = "^/(api|qrapp|qrapp-api)"
     negate = $true
 }
 
@@ -88,4 +88,4 @@ Write-Host "Setup complete! Your applications should now be accessible at:" -For
 Write-Host "- Frontend: https://kiwilanka.co.nz" -ForegroundColor White
 Write-Host "- API: https://kiwilanka.co.nz/api/*" -ForegroundColor White
 Write-Host "- QR App: https://kiwilanka.co.nz/qrapp/*" -ForegroundColor White
-Write-Host "- QR App API: https://kiwilanka.co.nz/qrappapi/*" -ForegroundColor White
+Write-Host "- QR App API: https://kiwilanka.co.nz/qrapp-api/*" -ForegroundColor White

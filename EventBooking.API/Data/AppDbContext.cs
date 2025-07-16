@@ -118,6 +118,15 @@ namespace EventBooking.API.Data
                 .Property(e => e.Price)
                 .HasPrecision(18, 2);
 
+            // Configure processing fee precision
+            modelBuilder.Entity<Event>()
+                .Property(e => e.ProcessingFeePercentage)
+                .HasPrecision(5, 4); // Allows up to 9.9999% (4 decimal places)
+
+            modelBuilder.Entity<Event>()
+                .Property(e => e.ProcessingFeeFixedAmount)
+                .HasPrecision(18, 2); // Standard currency precision
+
             modelBuilder.Entity<FoodItem>()
                 .Property(f => f.Price)
                 .HasPrecision(18, 2);

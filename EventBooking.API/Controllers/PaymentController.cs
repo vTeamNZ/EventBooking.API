@@ -22,19 +22,22 @@ namespace EventBooking.API.Controllers
         private readonly AppDbContext _context;
         private readonly IEventStatusService _eventStatusService;
         private readonly IBookingConfirmationService _bookingConfirmationService;
+        private readonly IProcessingFeeService _processingFeeService;
 
         public PaymentController(
             IConfiguration configuration,
             ILogger<PaymentController> logger,
             AppDbContext context,
             IEventStatusService eventStatusService,
-            IBookingConfirmationService bookingConfirmationService)
+            IBookingConfirmationService bookingConfirmationService,
+            IProcessingFeeService processingFeeService)
         {
             _configuration = configuration;
             _logger = logger;
             _context = context;
             _eventStatusService = eventStatusService;
             _bookingConfirmationService = bookingConfirmationService;
+            _processingFeeService = processingFeeService;
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
         }
 
@@ -251,12 +254,16 @@ namespace EventBooking.API.Controllers
                 }
 
                 var lineItems = new List<SessionLineItemOptions>();
+                decimal subtotal = 0;
 
                 // Add ticket line items
                 if (request.TicketDetails != null && request.TicketDetails.Any())
                 {
                     foreach (var ticket in request.TicketDetails)
                     {
+                        var ticketTotal = ticket.UnitPrice * ticket.Quantity;
+                        subtotal += ticketTotal;
+                        
                         lineItems.Add(new SessionLineItemOptions
                         {
                             PriceData = new SessionLineItemPriceDataOptions
@@ -279,6 +286,9 @@ namespace EventBooking.API.Controllers
                 {
                     foreach (var food in request.FoodDetails)
                     {
+                        var foodTotal = food.UnitPrice * food.Quantity;
+                        subtotal += foodTotal;
+                        
                         lineItems.Add(new SessionLineItemOptions
                         {
                             PriceData = new SessionLineItemPriceDataOptions
@@ -294,6 +304,29 @@ namespace EventBooking.API.Controllers
                             Quantity = food.Quantity,
                         });
                     }
+                }
+
+                // Calculate and add processing fee if enabled
+                var processingFeeCalculation = _processingFeeService.CalculateTotalWithProcessingFee(subtotal, eventItem);
+                if (processingFeeCalculation.ProcessingFeeApplied && processingFeeCalculation.ProcessingFeeAmount > 0)
+                {
+                    lineItems.Add(new SessionLineItemOptions
+                    {
+                        PriceData = new SessionLineItemPriceDataOptions
+                        {
+                            UnitAmount = (long)(processingFeeCalculation.ProcessingFeeAmount * 100), // Convert to cents
+                            Currency = "nzd",
+                            ProductData = new SessionLineItemPriceDataProductDataOptions
+                            {
+                                Name = "Processing Fee",
+                                Description = $"Processing fee for {request.EventTitle}",
+                            }
+                        },
+                        Quantity = 1,
+                    });
+                    
+                    _logger.LogInformation("Added processing fee of ${ProcessingFee} to checkout session for event {EventId}", 
+                        processingFeeCalculation.ProcessingFeeAmount, request.EventId);
                 }
 
                 var options = new SessionCreateOptions
@@ -560,5 +593,58 @@ namespace EventBooking.API.Controllers
                 return StatusCode(500, $"Error debugging session: {ex.Message}");
             }
         }
+
+        // GET: Payment/processing-fee/{eventId}?amount={amount}
+        [HttpGet("processing-fee/{eventId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<ProcessingFeeCalculationResponse>> GetProcessingFeeCalculation(
+            int eventId, 
+            [FromQuery] decimal amount)
+        {
+            try
+            {
+                if (amount <= 0)
+                {
+                    return BadRequest("Amount must be greater than 0");
+                }
+
+                // Get the event from the database
+                var eventData = await _context.Events.FindAsync(eventId);
+                if (eventData == null)
+                {
+                    return NotFound("Event not found");
+                }
+
+                var calculation = _processingFeeService.CalculateTotalWithProcessingFee(amount, eventData);
+                
+                return Ok(new ProcessingFeeCalculationResponse
+                {
+                    OriginalAmount = calculation.OrderAmount,
+                    ProcessingFeeAmount = calculation.ProcessingFeeAmount,
+                    TotalAmount = calculation.TotalAmount,
+                    ProcessingFeePercentage = eventData.ProcessingFeePercentage,
+                    ProcessingFeeFixedAmount = eventData.ProcessingFeeFixedAmount,
+                    IsProcessingFeeEnabled = calculation.ProcessingFeeApplied,
+                    Description = calculation.ProcessingFeeDescription
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error calculating processing fee for event {EventId} with amount {Amount}", eventId, amount);
+                return StatusCode(500, "Error calculating processing fee");
+            }
+        }
+    }
+
+    // Response model for processing fee calculation
+    public class ProcessingFeeCalculationResponse
+    {
+        public decimal OriginalAmount { get; set; }
+        public decimal ProcessingFeeAmount { get; set; }
+        public decimal TotalAmount { get; set; }
+        public decimal ProcessingFeePercentage { get; set; }
+        public decimal ProcessingFeeFixedAmount { get; set; }
+        public bool IsProcessingFeeEnabled { get; set; }
+        public string Description { get; set; } = string.Empty;
     }
 }

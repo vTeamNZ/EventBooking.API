@@ -171,7 +171,9 @@ namespace EventBooking.API.Controllers
         {
             try
             {
-                var query = _context.Events.AsQueryable();
+                // Admin only sees events that are submitted for review or already processed
+                var query = _context.Events
+                    .Where(e => e.Status != EventStatus.Draft);
 
                 if (active.HasValue)
                 {
@@ -191,7 +193,12 @@ namespace EventBooking.API.Controllers
                         e.Capacity,
                         e.ImageUrl,
                         e.IsActive,
+                        e.Status,
+                        StatusText = e.Status.ToString(),
                         e.SeatSelectionMode,
+                        e.ProcessingFeePercentage,
+                        e.ProcessingFeeFixedAmount,
+                        e.ProcessingFeeEnabled,
                         Organizer = e.Organizer == null ? null : new
                         {
                             e.Organizer.Id,
@@ -224,15 +231,43 @@ namespace EventBooking.API.Controllers
                     return NotFound("Event not found");
                 }
 
-                eventItem.IsActive = !eventItem.IsActive;
+                // New status-based logic
+                if (eventItem.Status == EventStatus.Pending)
+                {
+                    eventItem.Status = EventStatus.Active;
+                    eventItem.IsActive = true;
+                }
+                else if (eventItem.Status == EventStatus.Active)
+                {
+                    eventItem.Status = EventStatus.Inactive;
+                    eventItem.IsActive = false;
+                }
+                else if (eventItem.Status == EventStatus.Inactive)
+                {
+                    eventItem.Status = EventStatus.Active;
+                    eventItem.IsActive = true;
+                }
+                else
+                {
+                    return BadRequest("Draft events cannot be activated directly. They must be submitted for review first.");
+                }
+
                 await _context.SaveChangesAsync();
 
+                var statusText = eventItem.Status switch
+                {
+                    EventStatus.Active => "activated",
+                    EventStatus.Inactive => "deactivated", 
+                    _ => "updated"
+                };
+
                 _logger.LogInformation("Event {EventId} status changed to {Status} by admin {AdminId}", 
-                    id, eventItem.IsActive ? "Active" : "Inactive", User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
+                    id, eventItem.Status, User.FindFirst(ClaimTypes.NameIdentifier)?.Value);
 
                 return Ok(new { 
-                    message = $"Event {(eventItem.IsActive ? "activated" : "deactivated")} successfully",
+                    message = $"Event {statusText} successfully",
                     eventId = id,
+                    status = eventItem.Status.ToString(),
                     isActive = eventItem.IsActive
                 });
             }
@@ -240,6 +275,56 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error toggling event status {EventId}", id);
                 return StatusCode(500, "Error updating event status");
+            }
+        }
+
+        // PUT: api/Admin/events/{id}/processing-fee
+        [HttpPut("events/{id}/processing-fee")]
+        public async Task<IActionResult> UpdateEventProcessingFee(int id, [FromBody] UpdateProcessingFeeRequest request)
+        {
+            try
+            {
+                var eventItem = await _context.Events.FindAsync(id);
+                if (eventItem == null)
+                {
+                    return NotFound("Event not found");
+                }
+
+                // Validate input
+                if (request.ProcessingFeePercentage < 0 || request.ProcessingFeePercentage > 100)
+                {
+                    return BadRequest("Processing fee percentage must be between 0 and 100");
+                }
+
+                if (request.ProcessingFeeFixedAmount < 0)
+                {
+                    return BadRequest("Processing fee fixed amount must be non-negative");
+                }
+
+                // Update processing fee settings
+                eventItem.ProcessingFeePercentage = request.ProcessingFeePercentage;
+                eventItem.ProcessingFeeFixedAmount = request.ProcessingFeeFixedAmount;
+                eventItem.ProcessingFeeEnabled = request.ProcessingFeeEnabled;
+
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("Event {EventId} processing fee updated by admin {AdminId}. " +
+                    "Enabled: {Enabled}, Percentage: {Percentage}%, Fixed: ${Fixed}", 
+                    id, User.FindFirst(ClaimTypes.NameIdentifier)?.Value,
+                    request.ProcessingFeeEnabled, request.ProcessingFeePercentage, request.ProcessingFeeFixedAmount);
+
+                return Ok(new { 
+                    message = "Processing fee updated successfully",
+                    eventId = id,
+                    processingFeeEnabled = eventItem.ProcessingFeeEnabled,
+                    processingFeePercentage = eventItem.ProcessingFeePercentage,
+                    processingFeeFixedAmount = eventItem.ProcessingFeeFixedAmount
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating processing fee for event {EventId}", id);
+                return StatusCode(500, "Error updating processing fee");
             }
         }
 

@@ -4,6 +4,7 @@ using EventBooking.API.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace EventBooking.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250715141736_AddEventStatusColumn")]
+    partial class AddEventStatusColumn
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -116,7 +119,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("EventId");
 
-                    b.ToTable("Bookings", (string)null);
+                    b.ToTable("Bookings");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.BookingFood", b =>
@@ -142,7 +145,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("FoodItemId");
 
-                    b.ToTable("BookingFoods", (string)null);
+                    b.ToTable("BookingFoods");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.BookingTicket", b =>
@@ -168,7 +171,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("TicketTypeId");
 
-                    b.ToTable("BookingTickets", (string)null);
+                    b.ToTable("BookingTickets");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.ETicketBooking", b =>
@@ -216,7 +219,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("EventBookings", (string)null);
+                    b.ToTable("EventBookings");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Event", b =>
@@ -276,7 +279,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("VenueId");
 
-                    b.ToTable("Events", (string)null);
+                    b.ToTable("Events");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.FoodItem", b =>
@@ -305,7 +308,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("EventId");
 
-                    b.ToTable("FoodItems", (string)null);
+                    b.ToTable("FoodItems");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Organizer", b =>
@@ -355,7 +358,7 @@ namespace EventBooking.API.Migrations
                     b.HasIndex("UserId")
                         .IsUnique();
 
-                    b.ToTable("Organizers", (string)null);
+                    b.ToTable("Organizers");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.PaymentRecord", b =>
@@ -416,7 +419,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("PaymentRecords", (string)null);
+                    b.ToTable("PaymentRecords");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Payments.Payment", b =>
@@ -488,7 +491,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("EventId");
 
-                    b.ToTable("Payments", (string)null);
+                    b.ToTable("Payments");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Reservation", b =>
@@ -531,7 +534,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("Reservations", (string)null);
+                    b.ToTable("Reservations");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Seat", b =>
@@ -605,7 +608,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("TicketTypeId");
 
-                    b.ToTable("Seats", (string)null);
+                    b.ToTable("Seats");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.SeatReservation", b =>
@@ -648,7 +651,7 @@ namespace EventBooking.API.Migrations
                     b.HasIndex("EventId", "Row", "Number")
                         .IsUnique();
 
-                    b.ToTable("SeatReservations", (string)null);
+                    b.ToTable("SeatReservations");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Table", b =>
@@ -706,7 +709,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("TicketTypeId");
 
-                    b.ToTable("Tables", (string)null);
+                    b.ToTable("Tables");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.TableReservation", b =>
@@ -736,7 +739,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("TableReservations", (string)null);
+                    b.ToTable("TableReservations");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.TicketType", b =>
@@ -781,7 +784,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasIndex("EventId");
 
-                    b.ToTable("TicketTypes", (string)null);
+                    b.ToTable("TicketTypes");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Venue", b =>
@@ -865,7 +868,7 @@ namespace EventBooking.API.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Venues", (string)null);
+                    b.ToTable("Venues");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole", b =>
