@@ -9,7 +9,7 @@ namespace EventBooking.API.Services
 {
     public interface IBookingConfirmationService
     {
-        Task<bool> ProcessPaymentSuccessAsync(string sessionId, string paymentIntentId);
+        Task<BookingConfirmationResult> ProcessPaymentSuccessAsync(string sessionId, string paymentIntentId);
     }
 
     public class BookingConfirmationService : IBookingConfirmationService
@@ -31,8 +31,10 @@ namespace EventBooking.API.Services
             _httpClient = httpClient;
         }
 
-        public async Task<bool> ProcessPaymentSuccessAsync(string sessionId, string paymentIntentId)
+        public async Task<BookingConfirmationResult> ProcessPaymentSuccessAsync(string sessionId, string paymentIntentId)
         {
+            var result = new BookingConfirmationResult();
+            
             try
             {
                 _logger.LogInformation("Processing payment success for session: {SessionId}", sessionId);
@@ -44,7 +46,9 @@ namespace EventBooking.API.Services
                 if (session.PaymentStatus != "paid")
                 {
                     _logger.LogWarning("Payment not successful for session: {SessionId}", sessionId);
-                    return false;
+                    result.Success = false;
+                    result.ErrorMessage = "Payment status is not paid";
+                    return result;
                 }
 
                 // Extract metadata
@@ -58,7 +62,9 @@ namespace EventBooking.API.Services
                 if (!int.TryParse(eventIdStr, out var eventId))
                 {
                     _logger.LogError("Invalid event ID in session metadata: {EventId}", eventIdStr);
-                    return false;
+                    result.Success = false;
+                    result.ErrorMessage = "Invalid event ID in metadata";
+                    return result;
                 }
 
                 // Get event details
@@ -69,47 +75,63 @@ namespace EventBooking.API.Services
                 if (eventEntity == null)
                 {
                     _logger.LogError("Event not found: {EventId}", eventId);
-                    return false;
+                    result.Success = false;
+                    result.ErrorMessage = "Event not found";
+                    return result;
                 }
 
-                // Get selected seats from metadata - THIS IS THE CRITICAL PART
-                session.Metadata.TryGetValue("selectedSeats", out var selectedSeatsString);
+                // Handle seat processing based on event type
+                List<string> selectedSeats = new List<string>();
                 
-                _logger.LogInformation("SEAT BOOKING - Selected seats string from metadata: {SelectedSeats}", selectedSeatsString);
-                
-                List<string> selectedSeats;
-                try
+                if (eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall)
                 {
-                    if (string.IsNullOrEmpty(selectedSeatsString))
+                    // For allocated seating events, get selected seats from metadata
+                    session.Metadata.TryGetValue("selectedSeats", out var selectedSeatsString);
+                    
+                    _logger.LogInformation("ALLOCATED SEATING - Selected seats string from metadata: {SelectedSeats}", selectedSeatsString);
+                    
+                    try
                     {
-                        selectedSeats = new List<string>();
+                        if (!string.IsNullOrEmpty(selectedSeatsString))
+                        {
+                            // Split by semicolon since seats are stored using string.Join(";", request.SelectedSeats)
+                            var seatsArray = selectedSeatsString.Split(';', StringSplitOptions.RemoveEmptyEntries);
+                            selectedSeats = seatsArray.ToList();
+                        }
+                            
+                        if (selectedSeats.Any())
+                        {
+                            _logger.LogInformation("ALLOCATED SEATING - Successfully parsed {Count} selected seats: {Seats}", 
+                                selectedSeats.Count, string.Join(", ", selectedSeats));
+                        }
+                        else
+                        {
+                            _logger.LogError("ALLOCATED SEATING - No seats found in metadata for allocated seating event");
+                            result.Success = false;
+                            result.ErrorMessage = "No seats selected for allocated seating event";
+                            return result;
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        // Split by semicolon since seats are stored using string.Join(";", request.SelectedSeats)
-                        var seatsArray = selectedSeatsString.Split(';', StringSplitOptions.RemoveEmptyEntries);
-                        selectedSeats = seatsArray.ToList();
-                    }
-                        
-                    if (selectedSeats != null && selectedSeats.Any())
-                    {
-                        _logger.LogInformation("SEAT BOOKING - Successfully parsed {Count} selected seats: {Seats}", 
-                            selectedSeats.Count, string.Join(", ", selectedSeats));
-                    }
-                    else
-                    {
-                        _logger.LogWarning("SEAT BOOKING - No seats parsed from metadata string");
+                        _logger.LogError(ex, "ALLOCATED SEATING - Error parsing selected seats: {SeatsString}", selectedSeatsString);
+                        result.Success = false;
+                        result.ErrorMessage = "Error processing seat selection";
+                        return result;
                     }
                 }
-                catch (Exception ex)
+                else if (eventEntity.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
                 {
-                    _logger.LogError(ex, "SEAT BOOKING - Error parsing selected seats string: {SeatsString}", selectedSeatsString);
-                    return false;
+                    // For general admission events, no specific seats are needed
+                    _logger.LogInformation("GENERAL ADMISSION - Processing general admission booking (no specific seats)");
+                    selectedSeats = new List<string>(); // Empty list is fine for general admission
                 }
-
-                if (selectedSeats == null || !selectedSeats.Any())
+                else
                 {
-                    _logger.LogWarning("No selected seats found in session metadata");
+                    _logger.LogError("Unknown seat selection mode: {Mode}", eventEntity.SeatSelectionMode);
+                    result.Success = false;
+                    result.ErrorMessage = "Unknown event seating configuration";
+                    return result;
                 }
 
                 // Parse ticket details
@@ -125,57 +147,6 @@ namespace EventBooking.API.Services
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Error deserializing ticket details JSON: {TicketDetails}", ticketDetailsJson);
-                }
-
-                // If no seats found in selectedSeats, try to extract from ticketDetails
-                if ((selectedSeats == null || !selectedSeats.Any()) && ticketDetails != null && ticketDetails.Any())
-                {
-                    _logger.LogInformation("SEAT BOOKING - No seats in selectedSeats, attempting to extract from ticketDetails");
-                    
-                    selectedSeats = new List<string>();
-                    foreach (var ticket in ticketDetails)
-                    {
-                        if (ticket.TryGetValue("Type", out var typeObj) && typeObj != null)
-                        {
-                            var type = typeObj.ToString();
-                            _logger.LogInformation("SEAT BOOKING - Processing ticket type: {Type}", type);
-                            
-                            // Check if this is a seat ticket (multiple possible formats)
-                            if (type?.Contains("Seat") == true)
-                            {
-                                // Handle format: "Seat (K1)" - single seat
-                                if (type.StartsWith("Seat (") && type.EndsWith(")"))
-                                {
-                                    var seatNumber = type.Substring(6, type.Length - 7); // Remove "Seat (" and ")"
-                                    selectedSeats.Add(seatNumber);
-                                    _logger.LogInformation("SEAT BOOKING - Extracted single seat {SeatNumber} from ticketDetails", seatNumber);
-                                }
-                                // Handle format: "Seats(M10,M13)" - multiple seats
-                                else if (type.StartsWith("Seats(") && type.EndsWith(")"))
-                                {
-                                    var seatsString = type.Substring(6, type.Length - 7); // Remove "Seats(" and ")"
-                                    var seatNumbers = seatsString.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                                        .Select(s => s.Trim())
-                                        .ToList();
-                                    selectedSeats.AddRange(seatNumbers);
-                                    _logger.LogInformation("SEAT BOOKING - Extracted multiple seats {SeatNumbers} from ticketDetails", string.Join(", ", seatNumbers));
-                                }
-                                // Handle format: "Seats (M10, M13)" - multiple seats with space
-                                else if (type.StartsWith("Seats (") && type.EndsWith(")"))
-                                {
-                                    var seatsString = type.Substring(7, type.Length - 8); // Remove "Seats (" and ")"
-                                    var seatNumbers = seatsString.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                                        .Select(s => s.Trim())
-                                        .ToList();
-                                    selectedSeats.AddRange(seatNumbers);
-                                    _logger.LogInformation("SEAT BOOKING - Extracted multiple seats with space {SeatNumbers} from ticketDetails", string.Join(", ", seatNumbers));
-                                }
-                            }
-                        }
-                    }
-                    
-                    _logger.LogInformation("SEAT BOOKING - Extracted {Count} seats from ticketDetails: {Seats}", 
-                        selectedSeats.Count, string.Join(", ", selectedSeats));
                 }
 
                 // Create one booking record for all seats
@@ -219,9 +190,14 @@ namespace EventBooking.API.Services
                     }
                 }
 
-                // Update seat status for each selected seat
-                if (selectedSeats != null && selectedSeats.Any())
+                // Handle QR generation based on event type
+                var qrResults = new List<QRGenerationResult>();
+                
+                if (eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall && selectedSeats.Any())
                 {
+                    // ALLOCATED SEATING: Update seat status and generate QR per seat
+                    _logger.LogInformation("ALLOCATED SEATING - Processing {Count} specific seats", selectedSeats.Count);
+                    
                     // Get all selected seats in one query for efficiency
                     var seats = await _context.Seats
                         .Where(s => s.EventId == eventId && selectedSeats.Contains(s.SeatNumber))
@@ -258,90 +234,226 @@ namespace EventBooking.API.Services
                     await _context.SaveChangesAsync();
                     _logger.LogInformation("Updated {Count} seats to Booked status", seats.Count);
                     
-                    // Call QR Code Generator API to handle EventBookings table and email generation
-                    await CallQRCodeGeneratorAPI(eventId, eventTitle ?? eventEntity.Title, selectedSeats, firstName ?? "Guest", paymentIntentId, session.CustomerEmail ?? "", eventEntity.Organizer?.ContactEmail ?? "");
+                    // Generate QR code for each seat
+                    foreach (var seatNumber in selectedSeats)
+                    {
+                        try 
+                        {
+                            var qrResult = await CallQRCodeGeneratorAPI(
+                                eventId, 
+                                eventTitle ?? eventEntity.Title, 
+                                seatNumber, 
+                                firstName ?? "Guest", 
+                                paymentIntentId, 
+                                session.CustomerEmail ?? "", 
+                                eventEntity.Organizer?.ContactEmail ?? ""
+                            );
+                            
+                            qrResults.Add(new QRGenerationResult 
+                            {
+                                SeatNumber = seatNumber,
+                                Success = qrResult.Success,
+                                TicketPath = qrResult.TicketPath,
+                                BookingId = qrResult.BookingId,
+                                ErrorMessage = qrResult.ErrorMessage
+                            });
+                        }
+                        catch (Exception qrEx)
+                        {
+                            _logger.LogError(qrEx, "QR generation failed for seat {Seat}", seatNumber);
+                            qrResults.Add(new QRGenerationResult 
+                            {
+                                SeatNumber = seatNumber,
+                                Success = false,
+                                ErrorMessage = qrEx.Message
+                            });
+                        }
+                    }
+                }
+                else if (eventEntity.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
+                {
+                    // GENERAL ADMISSION: Generate QR tickets based on ticket quantity
+                    _logger.LogInformation("GENERAL ADMISSION - Processing general admission tickets");
+                    
+                    // For general admission, generate QR tickets based on ticket details
+                    if (ticketDetails != null && ticketDetails.Any())
+                    {
+                        foreach (var ticket in ticketDetails)
+                        {
+                            if (ticket.TryGetValue("Type", out var typeObj) && 
+                                ticket.TryGetValue("Quantity", out var quantityObj) && 
+                                typeObj != null && quantityObj != null)
+                            {
+                                var ticketType = typeObj.ToString();
+                                if (int.TryParse(quantityObj.ToString(), out var quantity))
+                                {
+                                    _logger.LogInformation("GENERAL ADMISSION - Generating {Quantity} tickets for type: {Type}", quantity, ticketType);
+                                    
+                                    // Generate QR code for each ticket quantity
+                                    for (int i = 1; i <= quantity; i++)
+                                    {
+                                        try 
+                                        {
+                                            var ticketIdentifier = $"{ticketType}-{i}";
+                                            var qrResult = await CallQRCodeGeneratorAPI(
+                                                eventId, 
+                                                eventTitle ?? eventEntity.Title, 
+                                                ticketIdentifier, // Use ticket type + number instead of seat
+                                                firstName ?? "Guest", 
+                                                paymentIntentId, 
+                                                session.CustomerEmail ?? "", 
+                                                eventEntity.Organizer?.ContactEmail ?? ""
+                                            );
+                                            
+                                            qrResults.Add(new QRGenerationResult 
+                                            {
+                                                SeatNumber = ticketIdentifier, // Will contain ticket type info
+                                                Success = qrResult.Success,
+                                                TicketPath = qrResult.TicketPath,
+                                                BookingId = qrResult.BookingId,
+                                                ErrorMessage = qrResult.ErrorMessage
+                                            });
+                                        }
+                                        catch (Exception qrEx)
+                                        {
+                                            _logger.LogError(qrEx, "QR generation failed for general admission ticket {Type}-{Number}", ticketType, i);
+                                            qrResults.Add(new QRGenerationResult 
+                                            {
+                                                SeatNumber = $"{ticketType}-{i}",
+                                                Success = false,
+                                                ErrorMessage = qrEx.Message
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("GENERAL ADMISSION - No ticket details found for general admission event");
+                    }
                 }
 
                 await _context.SaveChangesAsync();
-                _logger.LogInformation("Payment success processed for session: {SessionId}", sessionId);
-                return true;
+                
+                // ✅ Build successful result with all data
+                result.Success = true;
+                result.EventTitle = eventTitle ?? eventEntity.Title;
+                result.CustomerName = $"{firstName} {lastName}".Trim();
+                result.CustomerEmail = session.CustomerEmail ?? "";
+                
+                // Set booked seats based on event type
+                if (eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall)
+                {
+                    result.BookedSeats = selectedSeats; // Actual seat numbers for allocated seating
+                }
+                else if (eventEntity.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
+                {
+                    // For general admission, list the ticket identifiers
+                    result.BookedSeats = qrResults.Select(qr => qr.SeatNumber).ToList();
+                }
+                else
+                {
+                    result.BookedSeats = new List<string>();
+                }
+                
+                result.AmountTotal = (decimal)(session.AmountTotal ?? 0) / 100;
+                result.TicketReference = paymentIntentId?.Replace("pi_", "") ?? "";
+                result.QRResults = qrResults;
+                result.BookingId = booking.Id;
+                
+                _logger.LogInformation("Payment success processed for session: {SessionId}, booking ID: {BookingId}, event type: {EventType}", 
+                    sessionId, booking.Id, eventEntity.SeatSelectionMode);
+                return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing payment success for session: {SessionId}", sessionId);
-                return false;
+                result.Success = false;
+                result.ErrorMessage = ex.Message;
+                return result;
             }
         }
 
-        private async Task CallQRCodeGeneratorAPI(int eventId, string eventName, List<string> seatNumbers, string firstName, string paymentGuid, string buyerEmail, string organizerEmail)
+        // ✅ Enhanced QR API call with proper result handling
+        private async Task<QRApiResult> CallQRCodeGeneratorAPI(
+            int eventId, 
+            string eventName, 
+            string seatNumber, 
+            string firstName, 
+            string paymentGuid, 
+            string buyerEmail, 
+            string organizerEmail)
         {
-            var maxRetries = 3;
-            var currentRetry = 0;
-            var baseDelay = TimeSpan.FromSeconds(1);
-            
-            _logger.LogInformation("Calling QR Code API for event {EventId} with {Count} seats", eventId, seatNumbers.Count);
-
-            while (currentRetry < maxRetries)
+            try
             {
-                try
+                var qrApiUrl = _configuration["QRCodeGeneratorAPI:BaseUrl"]?.TrimEnd('/');
+                if (string.IsNullOrEmpty(qrApiUrl))
                 {
-                    var qrApiUrl = _configuration["QRCodeGeneratorAPI:BaseUrl"]?.TrimEnd('/');
-                    if (string.IsNullOrEmpty(qrApiUrl))
-                    {
-                        _logger.LogWarning("QR Code Generator API URL not configured");
-                        return;
-                    }
+                    _logger.LogWarning("QR Code Generator API URL not configured");
+                    return new QRApiResult 
+                    { 
+                        Success = false, 
+                        ErrorMessage = "QR API URL not configured" 
+                    };
+                }
 
-                    foreach (var seatNumber in seatNumbers)
+                var eTicketRequest = new
+                {
+                    EventID = eventId.ToString(),
+                    EventName = eventName,
+                    SeatNo = seatNumber,
+                    FirstName = firstName,
+                    PaymentGUID = paymentGuid,
+                    BuyerEmail = buyerEmail,
+                    OrganizerEmail = organizerEmail
+                };
+
+                _logger.LogInformation("Calling QR API for seat {Seat} with data: {@Request}", 
+                    seatNumber, eTicketRequest);
+
+                var response = await _httpClient.PostAsJsonAsync(
+                    $"{qrApiUrl}/etickets/generate", 
+                    eTicketRequest
+                );
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    var qrResult = JsonSerializer.Deserialize<QRApiResponse>(responseContent);
+                    
+                    _logger.LogInformation("QR API success for seat {Seat}: {@Result}", seatNumber, qrResult);
+                    
+                    return new QRApiResult 
                     {
-                        var eTicketRequest = new
-                        {
-                            EventID = eventId.ToString(),
-                            EventName = eventName,
-                            SeatNo = seatNumber,
-                            FirstName = firstName,
-                            PaymentGUID = paymentGuid,
-                            BuyerEmail = buyerEmail,
-                            OrganizerEmail = organizerEmail
-                        };
-    
-                        var jsonContent = JsonSerializer.Serialize(eTicketRequest);
-                        var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
-    
-                        _logger.LogInformation("Sending request to QR Code API for seat {SeatNumber}", seatNumber);
-                        var response = await _httpClient.PostAsync($"{qrApiUrl}/api/etickets/generate", content);
+                        Success = true,
+                        TicketPath = qrResult?.TicketPath,
+                        BookingId = qrResult?.BookingId
+                    };
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError("QR API call failed for seat {Seat} with status {Status}: {Error}", 
+                        seatNumber, response.StatusCode, errorContent);
                         
-                        if (response.IsSuccessStatusCode)
-                        {
-                            var result = await response.Content.ReadFromJsonAsync<ETicketResponse>();
-                            if (result?.TicketPath != null)
-                            {
-                                _logger.LogInformation("QR Code generated successfully for seat: {SeatNumber}, TicketPath: {TicketPath}", seatNumber, result.TicketPath);
-                            }
-                        }
-                        else
-                        {
-                            _logger.LogWarning("Failed to generate QR Code for seat: {SeatNumber}. Status: {StatusCode}", 
-                                seatNumber, response.StatusCode);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error calling QR Code Generator API for seats, attempt {Attempt}", currentRetry + 1);
-                }
-
-                currentRetry++;
-                if (currentRetry < maxRetries)
-                {
-                    await Task.Delay(baseDelay * (1 << currentRetry)); // Exponential backoff
+                    return new QRApiResult 
+                    {
+                        Success = false,
+                        ErrorMessage = $"QR API failed: {response.StatusCode}"
+                    };
                 }
             }
-        }
-
-        private class ETicketResponse
-        {
-            public string? TicketPath { get; set; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Exception calling QR API for seat {Seat}", seatNumber);
+                return new QRApiResult 
+                {
+                    Success = false,
+                    ErrorMessage = ex.Message
+                };
+            }
         }
     }
 

@@ -9,7 +9,7 @@ using EventBooking.API.Models.Payment;
 using EventBooking.API.Models.Payments;
 using EventBooking.API.Data;
 using EventBooking.API.DTOs;
-using EventBooking.API.Services; // Add this line
+using EventBooking.API.Services;
 
 namespace EventBooking.API.Controllers
 {
@@ -23,7 +23,6 @@ namespace EventBooking.API.Controllers
         private readonly IEventStatusService _eventStatusService;
         private readonly IBookingConfirmationService _bookingConfirmationService;
         private readonly IProcessingFeeService _processingFeeService;
-
         public PaymentController(
             IConfiguration configuration,
             ILogger<PaymentController> logger,
@@ -174,14 +173,14 @@ namespace EventBooking.API.Controllers
 
         [HttpGet("verify-payment/{paymentIntentId}")]
         [AllowAnonymous]
-        public async Task<ActionResult<PaymentStatusResponse>> VerifyPayment(string paymentIntentId)
+        public async Task<ActionResult<Models.Payment.PaymentStatusResponse>> VerifyPayment(string paymentIntentId)
         {
             try
             {
                 var service = new PaymentIntentService();
                 var paymentIntent = await service.GetAsync(paymentIntentId);
 
-                return Ok(new PaymentStatusResponse
+                return Ok(new Models.Payment.PaymentStatusResponse
                 {
                     Status = paymentIntent.Status,
                     IsSuccessful = paymentIntent.Status == "succeeded",
@@ -243,13 +242,27 @@ namespace EventBooking.API.Controllers
                     return BadRequest("This event has ended and is no longer available for booking");
                 }
 
-                // Validate selected seats
-                if (request.SelectedSeats != null && request.SelectedSeats.Any())
+                // Only validate seats for EventHall events (allocated seating)
+                if (eventItem.SeatSelectionMode == SeatSelectionMode.EventHall)
                 {
+                    // For allocated seating events, seats must be provided and valid
+                    if (request.SelectedSeats == null || !request.SelectedSeats.Any())
+                    {
+                        return BadRequest("Selected seats are required for this event");
+                    }
+                    
                     var seatsValid = await ValidateSelectedSeats(request.EventId, request.SelectedSeats);
                     if (!seatsValid)
                     {
                         return BadRequest("One or more selected seats are not available");
+                    }
+                }
+                else if (eventItem.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
+                {
+                    // For general admission events, seats should not be provided
+                    if (request.SelectedSeats != null && request.SelectedSeats.Any())
+                    {
+                        return BadRequest("This is a general admission event - specific seats cannot be selected");
                     }
                 }
 
@@ -308,6 +321,7 @@ namespace EventBooking.API.Controllers
 
                 // Calculate and add processing fee if enabled
                 var processingFeeCalculation = _processingFeeService.CalculateTotalWithProcessingFee(subtotal, eventItem);
+                
                 if (processingFeeCalculation.ProcessingFeeApplied && processingFeeCalculation.ProcessingFeeAmount > 0)
                 {
                     lineItems.Add(new SessionLineItemOptions
@@ -325,8 +339,8 @@ namespace EventBooking.API.Controllers
                         Quantity = 1,
                     });
                     
-                    _logger.LogInformation("Added processing fee of ${ProcessingFee} to checkout session for event {EventId}", 
-                        processingFeeCalculation.ProcessingFeeAmount, request.EventId);
+                    _logger.LogInformation("Added processing fee of ${ProcessingFee} to checkout session", 
+                        processingFeeCalculation.ProcessingFeeAmount);
                 }
 
                 var options = new SessionCreateOptions
@@ -396,140 +410,131 @@ namespace EventBooking.API.Controllers
                 var session = await service.GetAsync(sessionId);
 
                 // Get the payment intent ID associated with this session
-                string paymentIntentId = session.PaymentIntentId;
-                
-                // Get formatted payment ID (shorter version for display)
-                string displayPaymentId = paymentIntentId?.Replace("pi_", "");
+                string paymentIntentId = session.PaymentIntentId ?? "";
+                string displayPaymentId = paymentIntentId.Replace("pi_", "");
 
-                // Extract event title from metadata
+                // Extract metadata
                 session.Metadata.TryGetValue("eventTitle", out var eventTitle);
-
-                // Process booking confirmation for paid sessions
-                if (session.PaymentStatus == "paid")
-                {
-                    // This ensures booking is processed even if webhook fails
-                    await _bookingConfirmationService.ProcessPaymentSuccessAsync(sessionId, paymentIntentId);
-                }
-
-                // Get customer name from metadata
                 session.Metadata.TryGetValue("customerFirstName", out var firstName);
                 session.Metadata.TryGetValue("customerLastName", out var lastName);
                 string customerName = $"{firstName} {lastName}".Trim();
 
-                // Get booked seats for this session - ALWAYS get from metadata regardless of payment status
+                // Get booked seats from metadata
                 List<string> bookedSeats = new List<string>();
-                
-                // First try to get selected seats directly from metadata
                 session.Metadata.TryGetValue("selectedSeats", out var selectedSeatsString);
-                _logger.LogInformation("Session {SessionId} - Selected seats string from metadata: '{SelectedSeats}'", sessionId, selectedSeatsString);
                 
                 if (!string.IsNullOrEmpty(selectedSeatsString))
                 {
                     try
                     {
-                        // Split by semicolon since seats were stored using string.Join(";", request.SelectedSeats)
                         var selectedSeats = selectedSeatsString.Split(';', StringSplitOptions.RemoveEmptyEntries);
-                        if (selectedSeats != null && selectedSeats.Length > 0)
-                        {
-                            _logger.LogInformation("Session {SessionId} - Successfully parsed {Count} seats from metadata: {Seats}", 
-                                sessionId, selectedSeats.Length, string.Join(", ", selectedSeats));
-                            bookedSeats = selectedSeats.ToList();
-                        }
-                        else
-                        {
-                            _logger.LogWarning("Session {SessionId} - No seats found in parsed string", sessionId);
-                        }
+                        bookedSeats = selectedSeats.ToList();
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Session {SessionId} - Failed to parse seats string: '{SeatsString}'", sessionId, selectedSeatsString);
+                        _logger.LogError(ex, "Failed to parse seats string: '{SeatsString}'", selectedSeatsString);
                     }
                 }
-                
-                // If no seats found in selectedSeats, try to extract from ticketDetails
-                if (bookedSeats.Count == 0)
-                {
-                    _logger.LogInformation("Session {SessionId} - No seats found in selectedSeats, trying ticketDetails", sessionId);
-                    session.Metadata.TryGetValue("ticketDetails", out var ticketDetailsString);
-                    
-                    if (!string.IsNullOrEmpty(ticketDetailsString))
-                    {
-                        try
-                        {
-                            var ticketDetails = System.Text.Json.JsonSerializer.Deserialize<List<Dictionary<string, object>>>(ticketDetailsString);
-                            if (ticketDetails != null)
-                            {
-                                foreach (var ticket in ticketDetails)
-                                {
-                                    if (ticket.TryGetValue("Type", out var typeObj) && typeObj != null)
-                                    {
-                                        var type = typeObj.ToString();
-                                        _logger.LogInformation("Session {SessionId} - Processing ticket type: {Type}", sessionId, type);
-                                        
-                                        // Check if this is a seat ticket (multiple possible formats)
-                                        if (type?.Contains("Seat") == true)
-                                        {
-                                            // Handle format: "Seat (K1)" - single seat
-                                            if (type.StartsWith("Seat (") && type.EndsWith(")"))
-                                            {
-                                                var seatNumber = type.Substring(6, type.Length - 7); // Remove "Seat (" and ")"
-                                                bookedSeats.Add(seatNumber);
-                                                _logger.LogInformation("Session {SessionId} - Extracted single seat {SeatNumber} from ticketDetails", sessionId, seatNumber);
-                                            }
-                                            // Handle format: "Seats(M10,M13)" - multiple seats
-                                            else if (type.StartsWith("Seats(") && type.EndsWith(")"))
-                                            {
-                                                var seatsString = type.Substring(6, type.Length - 7); // Remove "Seats(" and ")"
-                                                var seatNumbers = seatsString.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                                                    .Select(s => s.Trim())
-                                                    .ToList();
-                                                bookedSeats.AddRange(seatNumbers);
-                                                _logger.LogInformation("Session {SessionId} - Extracted multiple seats {SeatNumbers} from ticketDetails", sessionId, string.Join(", ", seatNumbers));
-                                            }
-                                            // Handle format: "Seats (M10, M13)" - multiple seats with space
-                                            else if (type.StartsWith("Seats (") && type.EndsWith(")"))
-                                            {
-                                                var seatsString = type.Substring(7, type.Length - 8); // Remove "Seats (" and ")"
-                                                var seatNumbers = seatsString.Split(',', StringSplitOptions.RemoveEmptyEntries)
-                                                    .Select(s => s.Trim())
-                                                    .ToList();
-                                                bookedSeats.AddRange(seatNumbers);
-                                                _logger.LogInformation("Session {SessionId} - Extracted multiple seats with space {SeatNumbers} from ticketDetails", sessionId, string.Join(", ", seatNumbers));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Session {SessionId} - Failed to parse ticketDetails: '{TicketDetails}'", sessionId, ticketDetailsString);
-                        }
-                    }
-                }
-                
-                // Log final result
-                _logger.LogInformation("Session {SessionId} - Final bookedSeats count: {Count}, seats: [{Seats}]", 
-                    sessionId, bookedSeats.Count, string.Join(", ", bookedSeats));
 
                 return Ok(new CheckoutSessionStatusResponse
                 {
                     Status = session.Status,
                     PaymentStatus = session.PaymentStatus,
                     IsSuccessful = session.PaymentStatus == "paid",
-                    CustomerEmail = session.CustomerEmail,
-                    AmountTotal = session.AmountTotal,
-                    PaymentId = displayPaymentId,  // Add the payment ID for display
-                    EventTitle = eventTitle,       // Add the event title
+                    CustomerEmail = session.CustomerEmail ?? "",
+                    AmountTotal = session.AmountTotal ?? 0,
+                    PaymentId = displayPaymentId,
+                    EventTitle = eventTitle,
                     BookedSeats = bookedSeats,
                     CustomerName = customerName,
-                    TicketReference = displayPaymentId?.Substring(0, Math.Min(displayPaymentId?.Length ?? 0, 8)) ?? string.Empty
+                    TicketReference = displayPaymentId
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error verifying session {SessionId}: {Message}", sessionId, ex.Message);
-                return StatusCode(500, $"Error verifying session: {ex.Message}");
+                _logger.LogError(ex, "Error verifying session: {SessionId}", sessionId);
+                return StatusCode(500, "Error verifying session");
+            }
+        }
+
+        [HttpGet("payment-status/{sessionId}")]
+        [AllowAnonymous]
+        public async Task<ActionResult<Services.WebhookPaymentStatusResponse>> GetPaymentStatus(string sessionId)
+        {
+            try
+            {
+                var service = new SessionService();
+                var session = await service.GetAsync(sessionId);
+
+                // Check if payment has been processed by looking for existing payment record
+                var paymentIntentId = session.PaymentIntentId ?? "";
+                var isProcessed = false;
+                Services.BookingDetailsResponse? bookingDetails = null;
+
+                if (session.PaymentStatus == "paid")
+                {
+                    // Always process the payment if it's paid and ensure booking confirmation
+                    await _bookingConfirmationService.ProcessPaymentSuccessAsync(sessionId, paymentIntentId);
+                    
+                    // Extract customer info from metadata
+                    session.Metadata.TryGetValue("eventTitle", out var eventTitle);
+                    session.Metadata.TryGetValue("customerFirstName", out var firstName);
+                    session.Metadata.TryGetValue("customerLastName", out var lastName);
+                    string customerName = $"{firstName} {lastName}".Trim();
+
+                    // Look for payment record (should exist after processing)
+                    var payment = await _context.Payments
+                        .FirstOrDefaultAsync(p => p.PaymentIntentId == paymentIntentId);
+
+                    if (payment != null)
+                    {
+                        isProcessed = true;
+                        
+                        bookingDetails = new Services.BookingDetailsResponse
+                        {
+                            EventTitle = eventTitle ?? "Unknown Event",
+                            CustomerName = customerName,
+                            CustomerEmail = session.CustomerEmail ?? "",
+                            PaymentId = paymentIntentId.Replace("pi_", ""),
+                            AmountTotal = (session.AmountTotal ?? 0) / 100m, // Convert from cents to dollars
+                            ProcessedAt = payment.UpdatedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
+                            TicketReference = paymentIntentId.Replace("pi_", "")
+                        };
+                    }
+                    else
+                    {
+                        // If no payment record found, still mark as processed since payment is successful
+                        isProcessed = true;
+                        
+                        bookingDetails = new Services.BookingDetailsResponse
+                        {
+                            EventTitle = eventTitle ?? "Unknown Event",
+                            CustomerName = customerName,
+                            CustomerEmail = session.CustomerEmail ?? "",
+                            PaymentId = paymentIntentId.Replace("pi_", ""),
+                            AmountTotal = (session.AmountTotal ?? 0) / 100m,
+                            ProcessedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
+                            TicketReference = paymentIntentId.Replace("pi_", "")
+                        };
+                    }
+                }
+
+                return Ok(new Services.WebhookPaymentStatusResponse
+                {
+                    IsProcessed = isProcessed,
+                    ProcessedAt = isProcessed ? DateTime.UtcNow : DateTime.MinValue,
+                    BookingDetails = bookingDetails
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error checking payment status for session {SessionId}: {Message}", sessionId, ex.Message);
+                return StatusCode(500, new Services.WebhookPaymentStatusResponse
+                {
+                    IsProcessed = false,
+                    ProcessedAt = DateTime.MinValue,
+                    ErrorMessage = "Error checking payment status"
+                });
             }
         }
 
