@@ -77,13 +77,94 @@ namespace EventBooking.API.Controllers
             _context.TicketTypes.Add(ticketType);
             await _context.SaveChangesAsync();
 
-            // Update seat allocations using the new service
+            // Update seat allocations using the new service (only if not bulk creating)
             if (eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall && eventEntity.Venue != null)
             {
                 await _seatAllocationService.UpdateSeatAllocationsAsync(dto.EventId);
             }
 
             return CreatedAtAction(nameof(GetTicketTypesForEvent), new { eventId = ticketType.EventId }, ticketType);
+        }
+
+        // POST: api/TicketTypes/bulk
+        [HttpPost("bulk")]
+        public async Task<ActionResult<List<TicketType>>> CreateTicketTypesBulk(List<TicketTypeCreateDTO> dtos)
+        {
+            if (!dtos.Any())
+            {
+                return BadRequest("No ticket types provided");
+            }
+
+            var eventId = dtos.First().EventId;
+            
+            // Verify all DTOs are for the same event
+            if (dtos.Any(dto => dto.EventId != eventId))
+            {
+                return BadRequest("All ticket types must be for the same event");
+            }
+
+            // Get the event to check its venue and seating info
+            var eventEntity = await _context.Events
+                .Include(e => e.Venue)
+                .FirstOrDefaultAsync(e => e.Id == eventId);
+
+            if (eventEntity == null)
+            {
+                return NotFound("Event not found");
+            }
+
+            var createdTicketTypes = new List<TicketType>();
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                foreach (var dto in dtos)
+                {
+                    // Synchronize Type and Name fields using the same value
+                    string typeValue = dto.Type ?? "General Admission";
+                    
+                    var ticketType = new TicketType
+                    {
+                        Type = typeValue,
+                        Name = typeValue, // Set Name field to same value as Type
+                        Price = dto.Price,
+                        Description = dto.Description,
+                        EventId = dto.EventId,
+                        Color = dto.Color // Add the color from the DTO
+                    };
+
+                    // If venue has allocated seating and row assignments are provided
+                    if (eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall && 
+                        eventEntity.Venue != null && 
+                        dto.SeatRows?.Any() == true)
+                    {
+                        // Store seat row assignments as JSON
+                        ticketType.SeatRowAssignments = JsonSerializer.Serialize(dto.SeatRows);
+                    }
+
+                    _context.TicketTypes.Add(ticketType);
+                    createdTicketTypes.Add(ticketType);
+                }
+
+                await _context.SaveChangesAsync();
+
+                // Update seat allocations once for all ticket types (if allocated seating)
+                if (eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall && eventEntity.Venue != null)
+                {
+                    await _seatAllocationService.UpdateSeatAllocationsAsync(eventId);
+                }
+
+                await transaction.CommitAsync();
+
+                _logger.LogInformation("Successfully created {Count} ticket types for event {EventId}", createdTicketTypes.Count, eventId);
+                return Ok(createdTicketTypes);
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Error creating bulk ticket types for event {EventId}", eventId);
+                return StatusCode(500, "Error creating ticket types");
+            }
         }
 
         // PUT: api/TicketTypes/5

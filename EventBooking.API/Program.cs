@@ -122,6 +122,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
             maxRetryCount: 3,
             maxRetryDelay: TimeSpan.FromSeconds(10),
             errorNumbersToAdd: null);
+        sqlOptions.CommandTimeout(300); // 5 minutes command timeout
     });
     options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
 });

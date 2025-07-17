@@ -80,27 +80,49 @@ namespace EventBooking.API.Services
                 }
             }
 
-            // Get all seats for this event
+            // Get all seats for this event in a single query with change tracking disabled for performance
             var allSeats = await _context.Seats
+                .AsNoTracking()
                 .Where(s => s.EventId == eventId)
                 .ToListAsync();
 
-            var updatedSeats = 0;
+            var seatsToUpdate = new List<Seat>();
             var unallocatedRows = new HashSet<string>();
 
-            // Update all seats based on their row assignment
+            // Prepare seat updates in memory first
             foreach (var seat in allSeats)
             {
+                var seatToUpdate = new Seat
+                {
+                    Id = seat.Id,
+                    EventId = seat.EventId,
+                    Row = seat.Row,
+                    Number = seat.Number,
+                    SeatNumber = seat.SeatNumber,
+                    X = seat.X,
+                    Y = seat.Y,
+                    Width = seat.Width,
+                    Height = seat.Height,
+                    Price = seat.Price,
+                    Status = seat.Status,
+                    IsReserved = seat.IsReserved,
+                    TicketTypeId = seat.TicketTypeId,
+                    TableId = seat.TableId,
+                    ReservedBy = seat.ReservedBy,
+                    ReservedUntil = seat.ReservedUntil
+                };
+
+                bool needsUpdate = false;
+
                 if (rowToTicketType.TryGetValue(seat.Row, out var ticketType))
                 {
                     // Row is allocated to a ticket type
-                    bool needsUpdate = false;
 
                     // Update ticket type and price
                     if (seat.TicketTypeId != ticketType.Id)
                     {
-                        seat.TicketTypeId = ticketType.Id;
-                        seat.Price = ticketType.Price;
+                        seatToUpdate.TicketTypeId = ticketType.Id;
+                        seatToUpdate.Price = ticketType.Price;
                         needsUpdate = true;
                     }
 
@@ -111,14 +133,9 @@ namespace EventBooking.API.Services
                     var newStatus = isGeneralAdmission ? SeatStatus.Reserved : SeatStatus.Available;
                     if (seat.Status != newStatus || seat.IsReserved != isGeneralAdmission)
                     {
-                        seat.Status = newStatus;
-                        seat.IsReserved = isGeneralAdmission;
+                        seatToUpdate.Status = newStatus;
+                        seatToUpdate.IsReserved = isGeneralAdmission;
                         needsUpdate = true;
-                    }
-
-                    if (needsUpdate)
-                    {
-                        updatedSeats++;
                     }
                 }
                 else
@@ -128,19 +145,90 @@ namespace EventBooking.API.Services
                     
                     if (seat.Status != SeatStatus.Reserved || !seat.IsReserved)
                     {
-                        seat.Status = SeatStatus.Reserved;
-                        seat.IsReserved = true;
-                        updatedSeats++;
+                        seatToUpdate.Status = SeatStatus.Reserved;
+                        seatToUpdate.IsReserved = true;
+                        needsUpdate = true;
                     }
+                }
+
+                if (needsUpdate)
+                {
+                    seatsToUpdate.Add(seatToUpdate);
                 }
             }
 
-            if (updatedSeats > 0)
-            {
-                await _context.SaveChangesAsync();
-                _logger.LogInformation(
-                    "Updated {UpdatedSeats} seats for event {EventId}. Allocated rows: {AllocatedRows}, Unallocated rows: {UnallocatedRows}", 
-                    updatedSeats, eventId, rowToTicketType.Keys.Count, unallocatedRows.Count);
+            // Bulk update all seats that need changes
+            if (seatsToUpdate.Count > 0)
+            {                    // Use SQL bulk update for better performance
+                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    try
+                    {
+                        // Use raw SQL for bulk updates to avoid Entity Framework overhead
+                        if (seatsToUpdate.Count > 0)
+                        {
+                            // Group updates by operation type for better performance
+                            var seatIdsToUpdate = seatsToUpdate.Select(s => s.Id).ToList();
+                            var seatUpdates = seatsToUpdate.Select(s => new
+                            {
+                                Id = s.Id,
+                                TicketTypeId = s.TicketTypeId,
+                                Price = s.Price,
+                                Status = (int)s.Status,
+                                IsReserved = s.IsReserved
+                            }).ToList();
+
+                            // Create a temporary table for bulk updates
+                            var tempTableName = $"#TempSeatUpdates_{Guid.NewGuid():N}";
+                            
+                            // Create temp table
+                            await _context.Database.ExecuteSqlRawAsync($@"
+                                CREATE TABLE {tempTableName} (
+                                    Id int PRIMARY KEY,
+                                    TicketTypeId int,
+                                    Price decimal(18,2),
+                                    Status int,
+                                    IsReserved bit
+                                )");
+
+                            // Insert data into temp table in batches
+                            const int batchSize = 1000;
+                            for (int i = 0; i < seatUpdates.Count; i += batchSize)
+                            {
+                                var batch = seatUpdates.Skip(i).Take(batchSize);
+                                var values = string.Join(", ", batch.Select(s => 
+                                    $"({s.Id}, {(s.TicketTypeId?.ToString() ?? "NULL")}, {s.Price}, {s.Status}, {(s.IsReserved ? 1 : 0)})"));
+                                
+                                await _context.Database.ExecuteSqlRawAsync($@"
+                                    INSERT INTO {tempTableName} (Id, TicketTypeId, Price, Status, IsReserved)
+                                    VALUES {values}");
+                            }
+
+                            // Perform bulk update using the temp table
+                            await _context.Database.ExecuteSqlRawAsync($@"
+                                UPDATE Seats
+                                SET TicketTypeId = temp.TicketTypeId,
+                                    Price = temp.Price,
+                                    Status = temp.Status,
+                                    IsReserved = temp.IsReserved
+                                FROM Seats
+                                INNER JOIN {tempTableName} temp ON Seats.Id = temp.Id");
+
+                            // Drop temp table
+                            await _context.Database.ExecuteSqlRawAsync($"DROP TABLE {tempTableName}");
+                        }
+
+                        await transaction.CommitAsync();
+                        
+                        _logger.LogInformation(
+                            "Updated {UpdatedSeats} seats for event {EventId}. Allocated rows: {AllocatedRows}, Unallocated rows: {UnallocatedRows}", 
+                            seatsToUpdate.Count, eventId, rowToTicketType.Keys.Count, unallocatedRows.Count);
+                    }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
+                        _logger.LogError(ex, "Error updating seat allocations for event {EventId}", eventId);
+                        throw;
+                    }
             }
             else
             {
