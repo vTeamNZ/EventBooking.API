@@ -92,18 +92,32 @@ namespace EventBooking.API.Controllers
         [HttpGet("by-title/{title}")]
         public async Task<ActionResult<Event>> GetEventByTitle(string title)
         {
-            var events = await _context.Events
+            // First try exact match
+            var exactMatch = await _context.Events
                 .Include(e => e.Venue)
                 .Include(e => e.Organizer)
+                .Include(e => e.TicketTypes)
+                .FirstOrDefaultAsync(e => e.Title.ToLower().Replace(" ", "-").Replace("'", "").Replace("\"", "").Replace("&", "and") == title.ToLower());
+
+            if (exactMatch != null)
+            {
+                return exactMatch;
+            }
+
+            // Fallback to contains search for partial matches
+            var partialMatch = await _context.Events
+                .Include(e => e.Venue)
+                .Include(e => e.Organizer)
+                .Include(e => e.TicketTypes)
                 .Where(e => e.Title.Contains(title))
                 .FirstOrDefaultAsync();
 
-            if (events == null)
+            if (partialMatch == null)
             {
                 return NotFound();
             }
 
-            return events;
+            return partialMatch;
         }
 
         [Authorize(Roles = "Organizer")]
