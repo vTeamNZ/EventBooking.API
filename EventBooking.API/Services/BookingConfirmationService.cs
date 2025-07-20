@@ -37,6 +37,7 @@ namespace EventBooking.API.Services
         public async Task<BookingConfirmationResult> ProcessPaymentSuccessAsync(string sessionId, string paymentIntentId)
         {
             var result = new BookingConfirmationResult();
+            Booking? booking = null; // ✅ Declare booking outside try block for exception handling
             
             try
             {
@@ -214,7 +215,7 @@ namespace EventBooking.API.Services
                 var totalAmount = (decimal)(session.AmountTotal ?? 0) / 100; // Convert from cents
                 var processingFee = CalculateProcessingFee(totalAmount);
                 
-                var booking = new Booking
+                booking = new Booking
                 {
                     EventId = eventId,
                     CustomerEmail = session.CustomerEmail ?? "",
@@ -650,16 +651,19 @@ namespace EventBooking.API.Services
             {
                 _logger.LogError(ex, "Error processing payment success for session: {SessionId}", sessionId);
                 
-                // ✅ Mark booking as failed if any error occurs
-                try 
+                // ✅ Mark booking as failed if any error occurs and booking was created
+                if (booking != null)
                 {
-                    booking.Status = "Failed";
-                    booking.UpdatedAt = DateTime.UtcNow;
-                    await _context.SaveChangesAsync();
-                }
-                catch (Exception saveEx)
-                {
-                    _logger.LogError(saveEx, "Failed to update booking status to Failed for session: {SessionId}", sessionId);
+                    try 
+                    {
+                        booking.Status = "Failed";
+                        booking.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                    }
+                    catch (Exception saveEx)
+                    {
+                        _logger.LogError(saveEx, "Failed to update booking status to Failed for session: {SessionId}", sessionId);
+                    }
                 }
                 
                 result.Success = false;
