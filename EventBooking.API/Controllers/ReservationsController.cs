@@ -14,9 +14,7 @@ using System.Threading.Tasks;
 
 namespace EventBooking.API.Controllers
 {
-    //[Authorize(Roles = "Admin,Attendee")]
-    [AllowAnonymous]
-    //[Authorize]
+    [Authorize] // ✅ SECURITY FIX: Require authentication for reservation management
     [Route("[controller]")]
     [ApiController]
     public class ReservationsController : ControllerBase
@@ -31,6 +29,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/Reservations
+        [Authorize(Roles = "Admin")] // ✅ Only admins can view all reservations
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Reservation>>> GetReservations()
         {
@@ -38,6 +37,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/Reservations/5
+        [Authorize(Roles = "Admin")] // ✅ Only admins can view specific reservations
         [HttpGet("{id}")]
         public async Task<ActionResult<Reservation>> GetReservation(int id)
         {
@@ -119,6 +119,7 @@ namespace EventBooking.API.Controllers
         }*/
 
         // DELETE: api/Reservations/5
+        [Authorize(Roles = "Admin")] // ✅ SECURITY FIX: Only admins can delete reservations
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteReservation(int id)
         {

@@ -200,7 +200,7 @@ namespace EventBooking.API.Controllers
             }
         }
 
-        private async Task<bool> ValidateSelectedSeats(int eventId, List<string> selectedSeats)
+        private async Task<bool> ValidateSelectedSeats(int eventId, List<string> selectedSeats, string? userSessionId = null)
         {
             if (selectedSeats == null || !selectedSeats.Any())
             {
@@ -212,8 +212,40 @@ namespace EventBooking.API.Controllers
                 var seat = await _context.Seats
                     .FirstOrDefaultAsync(s => s.EventId == eventId && s.SeatNumber == seatNumber);
 
-                if (seat == null || (seat.Status != SeatStatus.Available && seat.Status != SeatStatus.Reserved))
+                if (seat == null)
                 {
+                    _logger.LogWarning("Seat validation failed: Seat {SeatNumber} not found for event {EventId}", seatNumber, eventId);
+                    return false;
+                }
+
+                // Seat must be available OR reserved by the current user's session
+                if (seat.Status == SeatStatus.Available)
+                {
+                    continue; // Available seats are fine
+                }
+                
+                if (seat.Status == SeatStatus.Reserved)
+                {
+                    // For reserved seats, check if it's reserved by the current user's session
+                    if (string.IsNullOrEmpty(userSessionId) || seat.ReservedBy != userSessionId)
+                    {
+                        _logger.LogWarning("Seat validation failed: Seat {SeatNumber} is reserved by another session. Current session: {UserSessionId}, Seat reserved by: {ReservedBy}", 
+                            seatNumber, userSessionId, seat.ReservedBy);
+                        return false;
+                    }
+                    
+                    // Check if reservation hasn't expired
+                    if (seat.ReservedUntil.HasValue && seat.ReservedUntil.Value < DateTime.UtcNow)
+                    {
+                        _logger.LogWarning("Seat validation failed: Seat {SeatNumber} reservation has expired at {ReservedUntil}", 
+                            seatNumber, seat.ReservedUntil.Value);
+                        return false;
+                    }
+                }
+                else
+                {
+                    // Seat is in some other status (booked, unavailable, etc.)
+                    _logger.LogWarning("Seat validation failed: Seat {SeatNumber} has invalid status {Status}", seatNumber, seat.Status);
                     return false;
                 }
             }
@@ -256,10 +288,11 @@ namespace EventBooking.API.Controllers
                         return BadRequest("Selected seats are required for this event");
                     }
                     
-                    var seatsValid = await ValidateSelectedSeats(request.EventId, request.SelectedSeats);
+                    // Validate seats with session ownership check
+                    var seatsValid = await ValidateSelectedSeats(request.EventId, request.SelectedSeats, request.UserSessionId);
                     if (!seatsValid)
                     {
-                        return BadRequest("One or more selected seats are not available");
+                        return BadRequest("One or more selected seats are not available or not reserved by your session");
                     }
                 }
                 else if (eventItem.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
@@ -600,37 +633,9 @@ namespace EventBooking.API.Controllers
             }
         }
 
-        [HttpGet("debug-session/{sessionId}")]
-        [AllowAnonymous]
-        public async Task<ActionResult> DebugSession(string sessionId)
-        {
-            try
-            {
-                var service = new SessionService();
-                var session = await service.GetAsync(sessionId);
-
-                var debugInfo = new
-                {
-                    SessionId = sessionId,
-                    Status = session.Status,
-                    PaymentStatus = session.PaymentStatus,
-                    CustomerEmail = session.CustomerEmail,
-                    AmountTotal = session.AmountTotal,
-                    Metadata = session.Metadata?.ToDictionary(kvp => kvp.Key, kvp => kvp.Value) ?? new Dictionary<string, string>(),
-                    SelectedSeatsFromMetadata = session.Metadata?.GetValueOrDefault("selectedSeats", "NOT_FOUND"),
-                    EventIdFromMetadata = session.Metadata?.GetValueOrDefault("eventId", "NOT_FOUND")
-                };
-
-                _logger.LogInformation("Debug session {SessionId}: {@DebugInfo}", sessionId, debugInfo);
-                
-                return Ok(debugInfo);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error debugging session {SessionId}: {Message}", sessionId, ex.Message);
-                return StatusCode(500, $"Error debugging session: {ex.Message}");
-            }
-        }
+        // REMOVED: Debug session endpoint - Security risk in production
+        // [HttpGet("debug-session/{sessionId}")]
+        // This endpoint exposed sensitive payment session data and should not be available in production
 
         // GET: Payment/processing-fee/{eventId}?amount={amount}
         [HttpGet("processing-fee/{eventId}")]

@@ -6,9 +6,11 @@ using EventBooking.API.DTOs;
 using EventBooking.API.Services;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EventBooking.API.Controllers
 {
+    [Authorize] // ✅ SECURITY FIX: Require authentication for ticket type management
     [Route("[controller]")]
     [ApiController]
     public class TicketTypesController : ControllerBase
@@ -28,6 +30,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/TicketTypes/event/5
+        [AllowAnonymous] // ✅ Allow public viewing of ticket types for event browsing
         [HttpGet("event/{eventId}")]
         public async Task<ActionResult<IEnumerable<TicketType>>> GetTicketTypesForEvent(int eventId)
         {
@@ -39,6 +42,7 @@ namespace EventBooking.API.Controllers
         }
 
         // POST: api/TicketTypes
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can create ticket types
         [HttpPost]
         public async Task<ActionResult<TicketType>> CreateTicketType(TicketTypeCreateDTO dto)
         {
@@ -216,6 +220,7 @@ namespace EventBooking.API.Controllers
         }
 
         // DELETE: api/TicketTypes/5
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can delete ticket types
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteTicketType(int id)
         {

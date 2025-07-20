@@ -392,6 +392,7 @@ namespace EventBooking.API.Controllers
 
         // PUT: api/Seats/5
         // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can update seats
         [HttpPut("{id}")]
         public async Task<IActionResult> PutSeat(int id, Seat seat)
         {
@@ -423,6 +424,7 @@ namespace EventBooking.API.Controllers
 
         // POST: api/Seats
         // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can create seats
         [HttpPost]
         public async Task<ActionResult<Seat>> PostSeat(Seat seat)
         {
@@ -433,6 +435,7 @@ namespace EventBooking.API.Controllers
         }
 
         // DELETE: api/Seats/5
+        [Authorize(Roles = "Admin")] // ✅ SECURITY FIX: Only admins can delete seats
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteSeat(int id)
         {

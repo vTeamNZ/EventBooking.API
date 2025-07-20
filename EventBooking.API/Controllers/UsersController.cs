@@ -10,8 +10,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 
 namespace EventBooking.API.Controllers
-{    [Authorize(Roles = "Admin,Attendee")]
-    //[AllowAnonymous]
+{
+    [Authorize(Roles = "Admin")] // ✅ SECURITY FIX: Only admins can access user management endpoints
     [Route("[controller]")]
     [ApiController]
     public class UsersController : ControllerBase
