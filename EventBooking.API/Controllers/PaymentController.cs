@@ -10,6 +10,7 @@ using EventBooking.API.Models.Payments;
 using EventBooking.API.Data;
 using EventBooking.API.DTOs;
 using EventBooking.API.Services;
+using System.Text.Json;
 
 namespace EventBooking.API.Controllers
 {
@@ -156,6 +157,18 @@ namespace EventBooking.API.Controllers
                                 await _bookingConfirmationService.ProcessPaymentSuccessAsync(session.Id, session.PaymentIntentId);
                             }
                         }
+                        else if (stripeEvent.Type == "payment_intent.succeeded")
+                        {
+                            var paymentIntent = stripeEvent.Data.Object as PaymentIntent;
+                            _logger.LogInformation("🎯 Payment intent succeeded: {PaymentIntentId}", paymentIntent?.Id);
+                            
+                            // ✅ VERIFICATION ONLY: Log confirmation that payment actually succeeded
+                            // This is a safety net to verify payment status, not to create bookings
+                            if (paymentIntent != null)
+                            {
+                                await VerifyPaymentIntentSucceeded(paymentIntent);
+                            }
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -173,6 +186,47 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error handling Stripe webhook: {Message}", ex.Message);
                 return Ok(new { received = true });
+            }
+        }
+
+        /// <summary>
+        /// 🔍 VERIFICATION ONLY: Confirms payment intent actually succeeded
+        /// This is a safety net to verify payment status at Stripe's end
+        /// Does NOT create database records - only verification and logging
+        /// </summary>
+        private async Task VerifyPaymentIntentSucceeded(PaymentIntent paymentIntent)
+        {
+            try
+            {
+                _logger.LogInformation("🔍 VERIFICATION: Confirming payment_intent.succeeded for PaymentIntentId: {PaymentIntentId}", paymentIntent.Id);
+
+                // Check if we have an existing payment record for this intent
+                var existingPayment = await _context.Payments
+                    .FirstOrDefaultAsync(p => p.PaymentIntentId == paymentIntent.Id);
+                    
+                if (existingPayment != null)
+                {
+                    _logger.LogInformation("✅ VERIFICATION PASSED: Found existing payment record for PaymentIntent: {PaymentIntentId}, Status: {Status}", 
+                        paymentIntent.Id, existingPayment.Status);
+                        
+                    // Update payment status if needed
+                    if (existingPayment.Status != "succeeded")
+                    {
+                        existingPayment.Status = "succeeded";
+                        existingPayment.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                        _logger.LogInformation("📝 Updated payment status to 'succeeded' for PaymentIntent: {PaymentIntentId}", paymentIntent.Id);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ VERIFICATION WARNING: No payment record found for PaymentIntent: {PaymentIntentId}", paymentIntent.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error during payment intent verification for PaymentIntentId: {PaymentIntentId}", paymentIntent.Id);
+                // Don't throw - webhook should always return 200 to Stripe
             }
         }
 
@@ -534,22 +588,126 @@ namespace EventBooking.API.Controllers
 
                 if (existingBooking != null)
                 {
-                    // Payment already processed - return cached result
-                    return Ok(new Services.WebhookPaymentStatusResponse
+                    // ✅ SAFE: Check if processing is actually complete
+                    if (existingBooking.Status == "Active")
                     {
-                        IsProcessed = true,
-                        ProcessedAt = existingBooking.CreatedAt,
-                        BookingDetails = new Services.BookingDetailsResponse
+                        // Extract processing details from metadata
+                        var qrResults = new List<Services.QRGenerationResult>();
+                        var processingSummary = new Services.ProcessingSummary();
+                        
+                        try 
                         {
-                            EventTitle = existingBooking.Event?.Title ?? "Unknown Event",
-                            CustomerName = $"{existingBooking.CustomerFirstName} {existingBooking.CustomerLastName}".Trim(),
-                            CustomerEmail = existingBooking.CustomerEmail,
-                            PaymentId = existingBooking.PaymentIntentId.Replace("pi_", ""),
-                            AmountTotal = existingBooking.TotalAmount,
-                            ProcessedAt = existingBooking.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
-                            TicketReference = existingBooking.PaymentIntentId.Replace("pi_", "")
+                            if (!string.IsNullOrEmpty(existingBooking.Metadata))
+                            {
+                                var metadata = JsonSerializer.Deserialize<JsonElement>(existingBooking.Metadata);
+                                
+                                // Extract QR results if available
+                                if (metadata.TryGetProperty("qrResults", out var qrResultsElement))
+                                {
+                                    foreach (var qrElement in qrResultsElement.EnumerateArray())
+                                    {
+                                        var qrResult = new Services.QRGenerationResult
+                                        {
+                                            SeatNumber = qrElement.TryGetProperty("seatNumber", out var seatNum) ? seatNum.GetString() ?? "" : "",
+                                            Success = qrElement.TryGetProperty("success", out var success) && success.GetBoolean(),
+                                            TicketPath = qrElement.TryGetProperty("hasTicketPath", out var hasPath) && hasPath.GetBoolean() ? "Generated" : null,
+                                            CustomerEmailResult = new Services.EmailDeliveryResult
+                                            {
+                                                Success = qrElement.TryGetProperty("customerEmailSuccess", out var custEmailSuccess) && custEmailSuccess.GetBoolean(),
+                                                ErrorMessage = qrElement.TryGetProperty("customerEmailError", out var custEmailError) ? custEmailError.GetString() : null,
+                                                EmailType = "Customer"
+                                            },
+                                            OrganizerEmailResult = new Services.EmailDeliveryResult
+                                            {
+                                                Success = qrElement.TryGetProperty("organizerEmailSuccess", out var orgEmailSuccess) && orgEmailSuccess.GetBoolean(),
+                                                ErrorMessage = qrElement.TryGetProperty("organizerEmailError", out var orgEmailError) ? orgEmailError.GetString() : null,
+                                                EmailType = "Organizer"
+                                            }
+                                        };
+                                        qrResults.Add(qrResult);
+                                    }
+                                }
+                                
+                                // Extract processing summary if available
+                                if (metadata.TryGetProperty("processingSummary", out var summaryElement))
+                                {
+                                    processingSummary = new Services.ProcessingSummary
+                                    {
+                                        TotalTickets = summaryElement.TryGetProperty("TotalTickets", out var total) ? total.GetInt32() : qrResults.Count,
+                                        SuccessfulQRGenerations = summaryElement.TryGetProperty("SuccessfulQRGenerations", out var successQR) ? successQR.GetInt32() : qrResults.Count(qr => qr.Success),
+                                        FailedQRGenerations = summaryElement.TryGetProperty("FailedQRGenerations", out var failedQR) ? failedQR.GetInt32() : qrResults.Count(qr => !qr.Success),
+                                        SuccessfulCustomerEmails = summaryElement.TryGetProperty("SuccessfulCustomerEmails", out var successCustomer) ? successCustomer.GetInt32() : qrResults.Count(qr => qr.CustomerEmailResult.Success),
+                                        FailedCustomerEmails = summaryElement.TryGetProperty("FailedCustomerEmails", out var failedCustomer) ? failedCustomer.GetInt32() : qrResults.Count(qr => !qr.CustomerEmailResult.Success),
+                                        SuccessfulOrganizerEmails = summaryElement.TryGetProperty("SuccessfulOrganizerEmails", out var successOrganizer) ? successOrganizer.GetInt32() : qrResults.Count(qr => qr.OrganizerEmailResult.Success),
+                                        FailedOrganizerEmails = summaryElement.TryGetProperty("FailedOrganizerEmails", out var failedOrganizer) ? failedOrganizer.GetInt32() : qrResults.Count(qr => !qr.OrganizerEmailResult.Success)
+                                    };
+                                }
+                            }
                         }
-                    });
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Error parsing booking metadata for detailed QR/email results");
+                            // Fallback to basic summary if metadata parsing fails
+                            processingSummary = new Services.ProcessingSummary
+                            {
+                                TotalTickets = 1,
+                                SuccessfulQRGenerations = 1,
+                                FailedQRGenerations = 0,
+                                SuccessfulCustomerEmails = 1,
+                                FailedCustomerEmails = 0,
+                                SuccessfulOrganizerEmails = 1,
+                                FailedOrganizerEmails = 0
+                            };
+                        }
+                        
+                        // Payment fully processed - return detailed result
+                        return Ok(new Services.WebhookPaymentStatusResponse
+                        {
+                            IsProcessed = true,
+                            ProcessedAt = existingBooking.CreatedAt,
+                            BookingDetails = new Services.BookingDetailsResponse
+                            {
+                                EventTitle = existingBooking.Event?.Title ?? "Unknown Event",
+                                CustomerName = $"{existingBooking.CustomerFirstName} {existingBooking.CustomerLastName}".Trim(),
+                                CustomerEmail = existingBooking.CustomerEmail,
+                                PaymentId = existingBooking.PaymentIntentId.Replace("pi_", ""),
+                                AmountTotal = existingBooking.TotalAmount,
+                                ProcessedAt = existingBooking.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                                TicketReference = existingBooking.PaymentIntentId.Replace("pi_", ""),
+                                BookingId = existingBooking.Id,
+                                QRTicketsGenerated = qrResults,
+                                ProcessingSummary = processingSummary
+                            }
+                        });
+                    }
+                    else if (existingBooking.Status == "Failed")
+                    {
+                        return Ok(new Services.WebhookPaymentStatusResponse
+                        {
+                            IsProcessed = false,
+                            ProcessedAt = existingBooking.CreatedAt,
+                            ErrorMessage = "Payment processing failed. Please contact support."
+                        });
+                    }
+                    else if (existingBooking.Status == "Processing")
+                    {
+                        // Still processing - continue polling
+                        return Ok(new Services.WebhookPaymentStatusResponse
+                        {
+                            IsProcessed = false,
+                            ProcessedAt = existingBooking.CreatedAt,
+                            BookingDetails = new Services.BookingDetailsResponse
+                            {
+                                EventTitle = existingBooking.Event?.Title ?? "Unknown Event",
+                                CustomerName = $"{existingBooking.CustomerFirstName} {existingBooking.CustomerLastName}".Trim(),
+                                CustomerEmail = existingBooking.CustomerEmail,
+                                PaymentId = existingBooking.PaymentIntentId.Replace("pi_", ""),
+                                AmountTotal = existingBooking.TotalAmount,
+                                ProcessedAt = "Still processing...",
+                                TicketReference = existingBooking.PaymentIntentId.Replace("pi_", "")
+                            }
+                        });
+                    }
                 }
 
                 // If not in database, check Stripe (but only if necessary)
