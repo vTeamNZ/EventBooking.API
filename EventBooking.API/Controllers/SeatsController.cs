@@ -615,6 +615,7 @@ namespace EventBooking.API.Controllers
 
         // POST: api/Seats/mark-booked
         [HttpPost("mark-booked")]
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only Admin and Organizers can bypass payment and mark seats as booked
         public async Task<ActionResult> MarkSeatsAsBooked([FromBody] MarkSeatsBookedRequest request)
         {
             using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted);

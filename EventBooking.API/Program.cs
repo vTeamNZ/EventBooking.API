@@ -60,8 +60,8 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Add ReservationCleanupService
-builder.Services.AddHostedService<ReservationCleanupService>();
+// REMOVED: ReservationCleanupService registration - service disabled as duplicate system removed
+// builder.Services.AddHostedService<ReservationCleanupService>();
 
 // Configure Swagger with JWT support
 builder.Services.AddSwaggerGen(c =>

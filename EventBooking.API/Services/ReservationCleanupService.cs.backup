@@ -41,6 +41,11 @@ namespace EventBooking.API.Services
             using var scope = _services.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
+            // REMOVED: Cleanup for duplicate SeatReservations system
+            // The main system now uses Seats table with automatic cleanup in SeatsController.ClearExpiredReservations()
+            _logger.LogInformation("Reservation cleanup service disabled - using SeatsController.ClearExpiredReservations() instead");
+            
+            /*
             var now = DateTime.UtcNow;
             var expiredReservations = await dbContext.SeatReservations
                 .Where(r => !r.IsConfirmed && r.ExpiresAt < now)
@@ -53,6 +58,7 @@ namespace EventBooking.API.Services
                 await dbContext.SaveChangesAsync();
                 _logger.LogInformation("Successfully removed {Count} expired reservations", expiredReservations.Count);
             }
+            */
         }
     }
 }

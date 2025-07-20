@@ -25,7 +25,8 @@ namespace EventBooking.API.Data
         public DbSet<FoodItem> FoodItems { get; set; }
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<BookingLineItem> BookingLineItems { get; set; }
-        public DbSet<SeatReservation> SeatReservations { get; set; }
+        // REMOVED: Duplicate seat reservation system - SeatsController uses Seats table directly
+        // public DbSet<SeatReservation> SeatReservations { get; set; }
         public DbSet<Venue> Venues { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -212,6 +213,8 @@ namespace EventBooking.API.Data
                 .Property(t => t.TablePrice)
                 .HasPrecision(18, 2);
 
+            // REMOVED: SeatReservation entity configuration - duplicate system removed
+            /*
             // Configure SeatReservation
             modelBuilder.Entity<SeatReservation>()
                 .HasOne(sr => sr.Event)
@@ -226,6 +229,7 @@ namespace EventBooking.API.Data
             // Add composite index for looking up active reservations
             modelBuilder.Entity<SeatReservation>()
                 .HasIndex(sr => new { sr.EventId, sr.IsConfirmed, sr.ExpiresAt });
+            */
 
             // Optional: Ensure delete behaviors and FK relationship
             modelBuilder.Entity<Organizer>()
