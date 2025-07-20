@@ -289,11 +289,11 @@ namespace EventBooking.API.Controllers
             if (!removePasswordResult.Succeeded)
                 return BadRequest("Failed to remove old password");
 
-            var addPasswordResult = await _userManager.AddPasswordAsync(adminUser, "Admin@123456");
+            var addPasswordResult = await _userManager.AddPasswordAsync(adminUser, "maGulak@143456");
             if (!addPasswordResult.Succeeded)
                 return BadRequest(addPasswordResult.Errors);
 
-            return Ok(new { message = "Admin password fixed successfully" });
+            return Ok(new { message = "Admin password fixed successfully to new password" });
         }
 
         [HttpPost("create-admin-unrestricted")]

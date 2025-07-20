@@ -35,7 +35,7 @@ namespace EventBooking.API
                     Role = "Admin"
                 };
 
-                var result = await userManager.CreateAsync(user, "Admin@123456");
+                var result = await userManager.CreateAsync(user, "maGulak@143456");
                 if (result.Succeeded)
                 {
                     await userManager.AddToRoleAsync(user, "Admin");

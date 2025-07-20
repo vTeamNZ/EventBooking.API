@@ -31,6 +31,9 @@ namespace EventBooking.API.Models
         [RegularExpression("^#[0-9A-Fa-f]{6}$")]
         public string Color { get; set; } = "#3B82F6"; // Default blue color
 
+        // Maximum number of tickets available for this type (for General Admission events)
+        public int? MaxTickets { get; set; }
+
         // Navigation properties
         public Event? Event { get; set; }
         public ICollection<Seat> Seats { get; set; } = new List<Seat>();

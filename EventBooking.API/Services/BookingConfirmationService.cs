@@ -17,18 +17,21 @@ namespace EventBooking.API.Services
         private readonly AppDbContext _context;
         private readonly ILogger<BookingConfirmationService> _logger;
         private readonly IConfiguration _configuration;
-        private readonly HttpClient _httpClient;
+        private readonly IQRTicketService _qrTicketService;
+        private readonly IEmailService _emailService;
 
         public BookingConfirmationService(
             AppDbContext context,
             ILogger<BookingConfirmationService> logger,
             IConfiguration configuration,
-            HttpClient httpClient)
+            IQRTicketService qrTicketService,
+            IEmailService emailService)
         {
             _context = context;
             _logger = logger;
             _configuration = configuration;
-            _httpClient = httpClient;
+            _qrTicketService = qrTicketService;
+            _emailService = emailService;
         }
 
         public async Task<BookingConfirmationResult> ProcessPaymentSuccessAsync(string sessionId, string paymentIntentId)
@@ -37,7 +40,7 @@ namespace EventBooking.API.Services
             
             try
             {
-                _logger.LogInformation("Processing payment success for session: {SessionId}", sessionId);
+                _logger.LogInformation("🏗️ Processing payment success using NEW BOOKINGLINEITEMS ARCHITECTURE for session: {SessionId}", sessionId);
 
                 // Get session from Stripe to extract metadata
                 var sessionService = new Stripe.Checkout.SessionService();
@@ -55,6 +58,7 @@ namespace EventBooking.API.Services
                 session.Metadata.TryGetValue("eventId", out var eventIdStr);
                 session.Metadata.TryGetValue("eventTitle", out var eventTitle);
                 session.Metadata.TryGetValue("ticketDetails", out var ticketDetailsJson);
+                session.Metadata.TryGetValue("foodDetails", out var foodDetailsJson);
                 session.Metadata.TryGetValue("customerFirstName", out var firstName);
                 session.Metadata.TryGetValue("customerLastName", out var lastName);
                 session.Metadata.TryGetValue("customerMobile", out var mobile);
@@ -137,11 +141,28 @@ namespace EventBooking.API.Services
                 // Parse ticket details
                 var ticketDetails = new List<Dictionary<string, object>>();
                 
+                _logger.LogInformation("Raw ticket details JSON from metadata: {TicketDetailsJson}", ticketDetailsJson);
+                
                 try 
                 {
                     if (!string.IsNullOrEmpty(ticketDetailsJson))
                     {
                         ticketDetails = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(ticketDetailsJson);
+                        _logger.LogInformation("Successfully parsed {Count} ticket details from JSON", ticketDetails?.Count ?? 0);
+                        
+                        if (ticketDetails != null)
+                        {
+                            for (int i = 0; i < ticketDetails.Count; i++)
+                            {
+                                var ticket = ticketDetails[i];
+                                _logger.LogInformation("Ticket {Index}: {TicketData}", i, 
+                                    string.Join(", ", ticket.Select(kvp => $"{kvp.Key}={kvp.Value}")));
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("No ticket details JSON found in metadata");
                     }
                 }
                 catch (Exception ex)
@@ -149,46 +170,198 @@ namespace EventBooking.API.Services
                     _logger.LogError(ex, "Error deserializing ticket details JSON: {TicketDetails}", ticketDetailsJson);
                 }
 
-                // Create one booking record for all seats
+                // Parse food details if present
+                var foodDetails = new List<Dictionary<string, object>>();
+                try 
+                {
+                    if (!string.IsNullOrEmpty(foodDetailsJson))
+                    {
+                        foodDetails = JsonSerializer.Deserialize<List<Dictionary<string, object>>>(foodDetailsJson);
+                        _logger.LogInformation("Successfully parsed {Count} food details from JSON", foodDetails?.Count ?? 0);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error deserializing food details JSON: {FoodDetails}", foodDetailsJson);
+                }
+
+                // 🎯 CREATE BOOKING WITH NEW ARCHITECTURE
+                var totalAmount = (decimal)(session.AmountTotal ?? 0) / 100; // Convert from cents
+                var processingFee = CalculateProcessingFee(totalAmount);
+                
                 var booking = new Booking
                 {
                     EventId = eventId,
+                    CustomerEmail = session.CustomerEmail ?? "",
+                    CustomerFirstName = firstName ?? "Guest",
+                    CustomerLastName = lastName ?? "",
+                    CustomerMobile = mobile ?? "",
+                    PaymentIntentId = paymentIntentId,
+                    PaymentStatus = "Completed",
+                    TotalAmount = totalAmount,
+                    ProcessingFee = processingFee,
+                    Currency = "NZD",
                     CreatedAt = DateTime.UtcNow,
-                    TotalAmount = (decimal)(session.AmountTotal ?? 0) / 100 // Convert from cents
+                    Status = "Active",
+                    Metadata = JsonSerializer.Serialize(new 
+                    {
+                        sessionId = sessionId,
+                        paymentMethod = "stripe",
+                        eventType = eventEntity.SeatSelectionMode.ToString(),
+                        selectedSeats = selectedSeats,
+                        source = "stripe_checkout"
+                    })
                 };
 
                 _context.Bookings.Add(booking);
                 await _context.SaveChangesAsync();
 
-                // Process ticket types
+                _logger.LogInformation("✅ NEW ARCHITECTURE - Created booking with ID: {BookingId}", booking.Id);
+
+                // 🎯 CREATE BOOKING LINE ITEMS - UNIFIED ARCHITECTURE
+                var bookingLineItems = new List<BookingLineItem>();
+
+                // Process TICKET line items
                 if (ticketDetails != null && ticketDetails.Any())
                 {
                     foreach (var ticket in ticketDetails)
                     {
-                        if (ticket.TryGetValue("Type", out var typeObj) && typeObj != null)
+                        // Try both "Type" and "type" for case-insensitive matching
+                        var typeObj = ticket.TryGetValue("Type", out var typeCapital) ? typeCapital :
+                                    ticket.TryGetValue("type", out var typeLower) ? typeLower : null;
+
+                        if (typeObj != null)
                         {
                             var type = typeObj.ToString();
+                            
+                            // Find ticket type by matching Type or Name field
                             var ticketType = await _context.TicketTypes
-                                .FirstOrDefaultAsync(tt => tt.EventId == eventId && tt.Type == type);
+                                .FirstOrDefaultAsync(tt => tt.EventId == eventId && 
+                                    (tt.Type == type || tt.Name == type));
 
-                            if (ticketType != null && ticket.TryGetValue("Quantity", out var quantityObj) && quantityObj != null)
+                            // Try quantity with both cases
+                            var quantityObj = ticket.TryGetValue("Quantity", out var quantityCapital) ? quantityCapital :
+                                            ticket.TryGetValue("quantity", out var quantityLower) ? quantityLower : null;
+
+                            if (ticketType != null && quantityObj != null)
                             {
-                                int quantity;
-                                if (int.TryParse(quantityObj.ToString(), out quantity))
+                                if (int.TryParse(quantityObj.ToString(), out int quantity) && quantity > 0)
                                 {
-                                    var bookingTicket = new BookingTicket
+                                    _logger.LogInformation("🎫 NEW ARCHITECTURE - Creating BookingLineItem (Ticket): BookingId={BookingId}, TicketTypeId={TicketTypeId}, Quantity={Quantity}", 
+                                        booking.Id, ticketType.Id, quantity);
+
+                                    var bookingLineItem = new BookingLineItem
                                     {
                                         BookingId = booking.Id,
-                                        TicketTypeId = ticketType.Id,
-                                        Quantity = quantity
+                                        ItemType = "Ticket",
+                                        ItemId = ticketType.Id,
+                                        ItemName = ticketType.Name ?? ticketType.Type,
+                                        Quantity = quantity,
+                                        UnitPrice = ticketType.Price,
+                                        TotalPrice = quantity * ticketType.Price,
+                                        SeatDetails = JsonSerializer.Serialize(new 
+                                        {
+                                            ticketTypeId = ticketType.Id,
+                                            type = ticketType.Type,
+                                            color = ticketType.Color,
+                                            eventSeatMode = eventEntity.SeatSelectionMode.ToString()
+                                        }),
+                                        ItemDetails = JsonSerializer.Serialize(new 
+                                        {
+                                            description = ticketType.Description,
+                                            originalTicketData = ticket,
+                                            maxTickets = ticketType.MaxTickets
+                                        }),
+                                        QRCode = "", // Will be populated by QR service
+                                        Status = "Active",
+                                        CreatedAt = DateTime.UtcNow
                                     };
 
-                                    _context.BookingTickets.Add(bookingTicket);
+                                    bookingLineItems.Add(bookingLineItem);
+                                    _context.BookingLineItems.Add(bookingLineItem);
                                 }
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Could not find ticket type for event {EventId} with type '{Type}'", eventId, type);
                             }
                         }
                     }
                 }
+
+                // Process FOOD line items (if present) - NEW: Individual per-seat/ticket processing
+                if (foodDetails != null && foodDetails.Any())
+                {
+                    foreach (var food in foodDetails)
+                    {
+                        var nameObj = food.TryGetValue("Name", out var nameCapital) ? nameCapital :
+                                    food.TryGetValue("name", out var nameLower) ? nameLower : null;
+
+                        var quantityObj = food.TryGetValue("Quantity", out var quantityCapital) ? quantityCapital :
+                                        food.TryGetValue("quantity", out var quantityLower) ? quantityLower : null;
+
+                        var priceObj = food.TryGetValue("Price", out var priceCapital) ? priceCapital :
+                                     food.TryGetValue("price", out var priceLower) ? priceLower : null;
+
+                        // NEW: Get seat/ticket association for individual tracking
+                        var seatTicketIdObj = food.TryGetValue("seatTicketId", out var seatTicketId) ? seatTicketId : null;
+                        var seatTicketTypeObj = food.TryGetValue("seatTicketType", out var seatTicketType) ? seatTicketType : null;
+
+                        if (nameObj != null && quantityObj != null && priceObj != null)
+                        {
+                            if (int.TryParse(quantityObj.ToString(), out int quantity) && 
+                                decimal.TryParse(priceObj.ToString(), out decimal price))
+                            {
+                                var foodName = nameObj.ToString();
+                                
+                                // Try to find the food item in the database
+                                var foodItem = await _context.FoodItems
+                                    .FirstOrDefaultAsync(fi => fi.EventId == eventId && fi.Name == foodName);
+                                
+                                var foodItemId = foodItem?.Id ?? 0; // Use 0 if not found (legacy compatibility)
+                                
+                                _logger.LogInformation("🍕 NEW ARCHITECTURE - Creating Individual BookingLineItem (Food): {FoodName}, Quantity={Quantity}, ItemId={ItemId}, AssociatedWith={SeatTicketId}", 
+                                    foodName, quantity, foodItemId, seatTicketIdObj?.ToString() ?? "None");
+
+                                var bookingLineItem = new BookingLineItem
+                                {
+                                    BookingId = booking.Id,
+                                    ItemType = "Food",
+                                    ItemId = foodItemId, // ✅ Properly linked to FoodItems table
+                                    ItemName = foodName,
+                                    Quantity = quantity, // Individual quantity per seat/ticket
+                                    UnitPrice = price,
+                                    TotalPrice = quantity * price,
+                                    SeatDetails = JsonSerializer.Serialize(new 
+                                    {
+                                        associatedSeatTicket = seatTicketIdObj?.ToString(),
+                                        seatTicketType = seatTicketTypeObj?.ToString(),
+                                        individualSelection = true
+                                    }),
+                                    ItemDetails = JsonSerializer.Serialize(new 
+                                    {
+                                        originalFoodData = food,
+                                        category = "concession",
+                                        requiresPreparation = true,
+                                        databaseItemId = foodItemId,
+                                        description = foodItem?.Description,
+                                        associatedWith = seatTicketIdObj?.ToString(),
+                                        selectionType = "individual"
+                                    }),
+                                    QRCode = "", // Food items typically don't need QR codes
+                                    Status = "Active",
+                                    CreatedAt = DateTime.UtcNow
+                                };
+
+                                bookingLineItems.Add(bookingLineItem);
+                                _context.BookingLineItems.Add(bookingLineItem);
+                            }
+                        }
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                _logger.LogInformation("✅ NEW ARCHITECTURE - Created {Count} BookingLineItems", bookingLineItems.Count);
 
                 // Handle QR generation based on event type
                 var qrResults = new List<QRGenerationResult>();
@@ -234,20 +407,39 @@ namespace EventBooking.API.Services
                     await _context.SaveChangesAsync();
                     _logger.LogInformation("Updated {Count} seats to Booked status", seats.Count);
                     
-                    // Generate QR code for each seat
+                    // 🍕 Extract food order data for enhanced display
+                    var foodOrders = ExtractFoodOrdersFromLineItems(bookingLineItems);
+                    
+                    // Generate QR code for each seat using consolidated service
                     foreach (var seatNumber in selectedSeats)
                     {
                         try 
                         {
-                            var qrResult = await CallQRCodeGeneratorAPI(
-                                eventId, 
-                                eventTitle ?? eventEntity.Title, 
-                                seatNumber, 
-                                firstName ?? "Guest", 
-                                paymentIntentId, 
-                                session.CustomerEmail ?? "", 
-                                eventEntity.Organizer?.ContactEmail ?? ""
-                            );
+                            var qrRequest = new QRTicketRequest
+                            {
+                                EventId = eventId.ToString(),
+                                EventName = eventTitle ?? eventEntity.Title,
+                                SeatNumber = seatNumber,
+                                FirstName = firstName ?? "Guest",
+                                PaymentGuid = paymentIntentId,
+                                BuyerEmail = session.CustomerEmail ?? "",
+                                OrganizerEmail = eventEntity.Organizer?.ContactEmail ?? "",
+                                BookingId = booking.Id, // ✅ Pass the booking ID
+                                FoodOrders = foodOrders // ✅ Pass food orders for PDF display
+                            };
+
+                            var qrResult = await _qrTicketService.GenerateQRTicketAsync(qrRequest);
+                            
+                            // 🎯 UPDATE THE CORRESPONDING BOOKING LINE ITEM WITH QR CODE
+                            var ticketLineItem = bookingLineItems.FirstOrDefault(bli => 
+                                bli.ItemType == "Ticket" && bli.SeatDetails.Contains(seatNumber));
+                            
+                            if (ticketLineItem != null && qrResult.Success)
+                            {
+                                ticketLineItem.QRCode = qrResult.BookingId ?? paymentIntentId;
+                                _logger.LogInformation("🎯 Updated BookingLineItem {Id} with QR code for seat {Seat}", 
+                                    ticketLineItem.Id, seatNumber);
+                            }
                             
                             qrResults.Add(new QRGenerationResult 
                             {
@@ -257,6 +449,32 @@ namespace EventBooking.API.Services
                                 BookingId = qrResult.BookingId,
                                 ErrorMessage = qrResult.ErrorMessage
                             });
+
+                            // Send emails if QR generation was successful
+                            if (qrResult.Success && !qrResult.IsDuplicate)
+                            {
+                                // Read the generated PDF for email attachment
+                                byte[] ticketPdf = System.IO.File.ReadAllBytes(qrResult.TicketPath);
+
+                                // Send buyer email with food orders
+                                await _emailService.SendTicketEmailAsync(
+                                    session.CustomerEmail ?? "",
+                                    eventTitle ?? eventEntity.Title,
+                                    firstName ?? "Guest",
+                                    ticketPdf,
+                                    foodOrders
+                                );
+
+                                // Send organizer notification with food orders
+                                await _emailService.SendOrganizerNotificationAsync(
+                                    eventEntity.Organizer?.ContactEmail ?? "",
+                                    eventTitle ?? eventEntity.Title,
+                                    firstName ?? "Guest",
+                                    session.CustomerEmail ?? "",
+                                    ticketPdf,
+                                    foodOrders
+                                );
+                            }
                         }
                         catch (Exception qrEx)
                         {
@@ -272,66 +490,94 @@ namespace EventBooking.API.Services
                 }
                 else if (eventEntity.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
                 {
-                    // GENERAL ADMISSION: Generate QR tickets based on ticket quantity
-                    _logger.LogInformation("GENERAL ADMISSION - Processing general admission tickets");
+                    // GENERAL ADMISSION: Generate QR tickets based on BookingLineItems quantity
+                    _logger.LogInformation("GENERAL ADMISSION - Processing tickets from BookingLineItems");
                     
-                    // For general admission, generate QR tickets based on ticket details
-                    if (ticketDetails != null && ticketDetails.Any())
+                    // 🍕 Extract food order data for enhanced display
+                    var foodOrders = ExtractFoodOrdersFromLineItems(bookingLineItems);
+                    
+                    var ticketLineItems = bookingLineItems.Where(bli => bli.ItemType == "Ticket").ToList();
+                    
+                    foreach (var lineItem in ticketLineItems)
                     {
-                        foreach (var ticket in ticketDetails)
+                        _logger.LogInformation("GENERAL ADMISSION - Generating {Quantity} tickets for {ItemName}", 
+                            lineItem.Quantity, lineItem.ItemName);
+                        
+                        // Generate QR code for each ticket quantity
+                        for (int i = 1; i <= lineItem.Quantity; i++)
                         {
-                            if (ticket.TryGetValue("Type", out var typeObj) && 
-                                ticket.TryGetValue("Quantity", out var quantityObj) && 
-                                typeObj != null && quantityObj != null)
+                            try 
                             {
-                                var ticketType = typeObj.ToString();
-                                if (int.TryParse(quantityObj.ToString(), out var quantity))
+                                var ticketIdentifier = $"{lineItem.ItemName}-{i}";
+                                var qrRequest = new QRTicketRequest
                                 {
-                                    _logger.LogInformation("GENERAL ADMISSION - Generating {Quantity} tickets for type: {Type}", quantity, ticketType);
-                                    
-                                    // Generate QR code for each ticket quantity
-                                    for (int i = 1; i <= quantity; i++)
-                                    {
-                                        try 
-                                        {
-                                            var ticketIdentifier = $"{ticketType}-{i}";
-                                            var qrResult = await CallQRCodeGeneratorAPI(
-                                                eventId, 
-                                                eventTitle ?? eventEntity.Title, 
-                                                ticketIdentifier, // Use ticket type + number instead of seat
-                                                firstName ?? "Guest", 
-                                                paymentIntentId, 
-                                                session.CustomerEmail ?? "", 
-                                                eventEntity.Organizer?.ContactEmail ?? ""
-                                            );
-                                            
-                                            qrResults.Add(new QRGenerationResult 
-                                            {
-                                                SeatNumber = ticketIdentifier, // Will contain ticket type info
-                                                Success = qrResult.Success,
-                                                TicketPath = qrResult.TicketPath,
-                                                BookingId = qrResult.BookingId,
-                                                ErrorMessage = qrResult.ErrorMessage
-                                            });
-                                        }
-                                        catch (Exception qrEx)
-                                        {
-                                            _logger.LogError(qrEx, "QR generation failed for general admission ticket {Type}-{Number}", ticketType, i);
-                                            qrResults.Add(new QRGenerationResult 
-                                            {
-                                                SeatNumber = $"{ticketType}-{i}",
-                                                Success = false,
-                                                ErrorMessage = qrEx.Message
-                                            });
-                                        }
-                                    }
+                                    EventId = eventId.ToString(),
+                                    EventName = eventTitle ?? eventEntity.Title,
+                                    SeatNumber = ticketIdentifier, // Use ticket type + number instead of seat
+                                    FirstName = firstName ?? "Guest",
+                                    PaymentGuid = paymentIntentId,
+                                    BuyerEmail = session.CustomerEmail ?? "",
+                                    OrganizerEmail = eventEntity.Organizer?.ContactEmail ?? "",
+                                    BookingId = booking.Id, // ✅ Pass the booking ID
+                                    FoodOrders = foodOrders // ✅ Pass food orders for PDF display
+                                };
+
+                                var qrResult = await _qrTicketService.GenerateQRTicketAsync(qrRequest);
+                                
+                                // 🎯 UPDATE THE BOOKING LINE ITEM WITH QR CODE (first ticket gets the QR)
+                                if (i == 1 && qrResult.Success)
+                                {
+                                    lineItem.QRCode = qrResult.BookingId ?? paymentIntentId;
+                                    _logger.LogInformation("🎯 Updated BookingLineItem {Id} with QR code for {ItemName}", 
+                                        lineItem.Id, lineItem.ItemName);
+                                }
+                                
+                                qrResults.Add(new QRGenerationResult 
+                                {
+                                    SeatNumber = ticketIdentifier, // Will contain ticket type info
+                                    Success = qrResult.Success,
+                                    TicketPath = qrResult.TicketPath,
+                                    BookingId = qrResult.BookingId,
+                                    ErrorMessage = qrResult.ErrorMessage
+                                });
+
+                                // Send emails if QR generation was successful
+                                if (qrResult.Success && !qrResult.IsDuplicate)
+                                {
+                                    // Read the generated PDF for email attachment
+                                    byte[] ticketPdf = System.IO.File.ReadAllBytes(qrResult.TicketPath);
+
+                                    // Send buyer email with food orders
+                                    await _emailService.SendTicketEmailAsync(
+                                        session.CustomerEmail ?? "",
+                                        eventTitle ?? eventEntity.Title,
+                                        firstName ?? "Guest",
+                                        ticketPdf,
+                                        foodOrders
+                                    );
+
+                                    // Send organizer notification with food orders
+                                    await _emailService.SendOrganizerNotificationAsync(
+                                        eventEntity.Organizer?.ContactEmail ?? "",
+                                        eventTitle ?? eventEntity.Title,
+                                        firstName ?? "Guest",
+                                        session.CustomerEmail ?? "",
+                                        ticketPdf,
+                                        foodOrders
+                                    );
                                 }
                             }
+                            catch (Exception qrEx)
+                            {
+                                _logger.LogError(qrEx, "QR generation failed for general admission ticket {Type}-{Number}", lineItem.ItemName, i);
+                                qrResults.Add(new QRGenerationResult 
+                                {
+                                    SeatNumber = $"{lineItem.ItemName}-{i}",
+                                    Success = false,
+                                    ErrorMessage = qrEx.Message
+                                });
+                            }
                         }
-                    }
-                    else
-                    {
-                        _logger.LogWarning("GENERAL ADMISSION - No ticket details found for general admission event");
                     }
                 }
 
@@ -363,8 +609,8 @@ namespace EventBooking.API.Services
                 result.QRResults = qrResults;
                 result.BookingId = booking.Id;
                 
-                _logger.LogInformation("Payment success processed for session: {SessionId}, booking ID: {BookingId}, event type: {EventType}", 
-                    sessionId, booking.Id, eventEntity.SeatSelectionMode);
+                _logger.LogInformation("🎉 NEW ARCHITECTURE SUCCESS - Processed payment for session: {SessionId}, booking ID: {BookingId}, line items: {LineItemCount}, event type: {EventType}", 
+                    sessionId, booking.Id, bookingLineItems.Count, eventEntity.SeatSelectionMode);
                 return result;
             }
             catch (Exception ex)
@@ -376,83 +622,74 @@ namespace EventBooking.API.Services
             }
         }
 
-        // ✅ Enhanced QR API call with proper result handling
-        private async Task<QRApiResult> CallQRCodeGeneratorAPI(
-            int eventId, 
-            string eventName, 
-            string seatNumber, 
-            string firstName, 
-            string paymentGuid, 
-            string buyerEmail, 
-            string organizerEmail)
+        /// <summary>
+        /// Calculate processing fee based on configuration
+        /// </summary>
+        private decimal CalculateProcessingFee(decimal totalAmount)
         {
             try
             {
-                var qrApiUrl = _configuration["QRCodeGeneratorAPI:BaseUrl"]?.TrimEnd('/');
-                if (string.IsNullOrEmpty(qrApiUrl))
+                // Get processing fee configuration from appsettings
+                var processingFeeEnabled = _configuration.GetValue<bool>("ProcessingFee:Enabled", false);
+                if (!processingFeeEnabled)
                 {
-                    _logger.LogWarning("QR Code Generator API URL not configured");
-                    return new QRApiResult 
-                    { 
-                        Success = false, 
-                        ErrorMessage = "QR API URL not configured" 
-                    };
+                    return 0;
                 }
 
-                var eTicketRequest = new
+                var feeType = _configuration.GetValue<string>("ProcessingFee:Type", "fixed");
+                
+                if (feeType.ToLower() == "percentage")
                 {
-                    EventID = eventId.ToString(),
-                    EventName = eventName,
-                    SeatNo = seatNumber,
-                    FirstName = firstName,
-                    PaymentGUID = paymentGuid,
-                    BuyerEmail = buyerEmail,
-                    OrganizerEmail = organizerEmail
-                };
-
-                _logger.LogInformation("Calling QR API for seat {Seat} with data: {@Request}", 
-                    seatNumber, eTicketRequest);
-
-                var response = await _httpClient.PostAsJsonAsync(
-                    $"{qrApiUrl}/etickets/generate", 
-                    eTicketRequest
-                );
-
-                if (response.IsSuccessStatusCode)
-                {
-                    var responseContent = await response.Content.ReadAsStringAsync();
-                    var qrResult = JsonSerializer.Deserialize<QRApiResponse>(responseContent);
+                    var feePercentage = _configuration.GetValue<decimal>("ProcessingFee:Percentage", 0);
+                    var maxFee = _configuration.GetValue<decimal>("ProcessingFee:MaxFee", 999);
                     
-                    _logger.LogInformation("QR API success for seat {Seat}: {@Result}", seatNumber, qrResult);
-                    
-                    return new QRApiResult 
-                    {
-                        Success = true,
-                        TicketPath = qrResult?.TicketPath,
-                        BookingId = qrResult?.BookingId
-                    };
+                    var calculatedFee = totalAmount * (feePercentage / 100);
+                    return Math.Min(calculatedFee, maxFee);
                 }
                 else
                 {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogError("QR API call failed for seat {Seat} with status {Status}: {Error}", 
-                        seatNumber, response.StatusCode, errorContent);
-                        
-                    return new QRApiResult 
-                    {
-                        Success = false,
-                        ErrorMessage = $"QR API failed: {response.StatusCode}"
-                    };
+                    // Fixed fee
+                    var fixedFee = _configuration.GetValue<decimal>("ProcessingFee:FixedAmount", 0);
+                    return fixedFee;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Exception calling QR API for seat {Seat}", seatNumber);
-                return new QRApiResult 
+                _logger.LogError(ex, "Error calculating processing fee for amount {Amount}", totalAmount);
+                return 0; // Return 0 if calculation fails
+            }
+        }
+
+        /// <summary>
+        /// Extract food order information from BookingLineItems for display in PDFs and emails
+        /// </summary>
+        private List<FoodOrderInfo> ExtractFoodOrdersFromLineItems(List<BookingLineItem> bookingLineItems)
+        {
+            try
+            {
+                var foodOrders = new List<FoodOrderInfo>();
+                
+                var foodLineItems = bookingLineItems.Where(bli => bli.ItemType == "Food").ToList();
+                
+                foreach (var foodItem in foodLineItems)
                 {
-                    Success = false,
-                    ErrorMessage = ex.Message
-                };
+                    foodOrders.Add(new FoodOrderInfo
+                    {
+                        Name = foodItem.ItemName,
+                        Quantity = foodItem.Quantity,
+                        UnitPrice = foodItem.UnitPrice,
+                        TotalPrice = foodItem.TotalPrice,
+                        Description = foodItem.ItemDetails ?? ""
+                    });
+                }
+                
+                _logger.LogInformation("Extracted {Count} food orders from BookingLineItems", foodOrders.Count);
+                return foodOrders;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error extracting food orders from BookingLineItems");
+                return new List<FoodOrderInfo>(); // Return empty list if extraction fails
             }
         }
     }

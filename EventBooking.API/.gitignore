@@ -13,6 +13,8 @@ obj/
 appsettings.json
 appsettings.Development.json
 appsettings.Production.json
+appsettings.*.backup.json
+appsettings.kwdb*.json
 
 # Keep template
 !appsettings.template.json

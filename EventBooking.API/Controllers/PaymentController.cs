@@ -23,13 +23,16 @@ namespace EventBooking.API.Controllers
         private readonly IEventStatusService _eventStatusService;
         private readonly IBookingConfirmationService _bookingConfirmationService;
         private readonly IProcessingFeeService _processingFeeService;
+        private readonly ITicketAvailabilityService _ticketAvailabilityService;
+        
         public PaymentController(
             IConfiguration configuration,
             ILogger<PaymentController> logger,
             AppDbContext context,
             IEventStatusService eventStatusService,
             IBookingConfirmationService bookingConfirmationService,
-            IProcessingFeeService processingFeeService)
+            IProcessingFeeService processingFeeService,
+            ITicketAvailabilityService ticketAvailabilityService)
         {
             _configuration = configuration;
             _logger = logger;
@@ -37,6 +40,7 @@ namespace EventBooking.API.Controllers
             _eventStatusService = eventStatusService;
             _bookingConfirmationService = bookingConfirmationService;
             _processingFeeService = processingFeeService;
+            _ticketAvailabilityService = ticketAvailabilityService;
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
         }
 
@@ -137,7 +141,8 @@ namespace EventBooking.API.Controllers
                         var stripeEvent = EventUtility.ConstructEvent(
                             json,
                             signature,
-                            webhookSecret
+                            webhookSecret,
+                            throwOnApiVersionMismatch: false
                         );
 
                         if (stripeEvent.Type == "checkout.session.completed")
@@ -263,6 +268,31 @@ namespace EventBooking.API.Controllers
                     if (request.SelectedSeats != null && request.SelectedSeats.Any())
                     {
                         return BadRequest("This is a general admission event - specific seats cannot be selected");
+                    }
+                }
+
+                // Validate ticket availability for General Admission events
+                if (eventItem.SeatSelectionMode == SeatSelectionMode.GeneralAdmission && 
+                    request.TicketDetails != null && request.TicketDetails.Any())
+                {
+                    foreach (var ticket in request.TicketDetails)
+                    {
+                        // Find the ticket type to get its ID
+                        var ticketType = await _context.TicketTypes
+                            .FirstOrDefaultAsync(tt => tt.EventId == request.EventId && tt.Type == ticket.Type);
+                        
+                        if (ticketType != null)
+                        {
+                            var isAvailable = await _ticketAvailabilityService.IsTicketTypeAvailableAsync(
+                                ticketType.Id, ticket.Quantity);
+                            
+                            if (!isAvailable)
+                            {
+                                var available = await _ticketAvailabilityService.GetTicketsAvailableAsync(ticketType.Id);
+                                return BadRequest($"Insufficient tickets available for {ticket.Type}. " +
+                                                $"Requested: {ticket.Quantity}, Available: {available}");
+                            }
+                        }
                     }
                 }
 
@@ -442,7 +472,7 @@ namespace EventBooking.API.Controllers
                     PaymentStatus = session.PaymentStatus,
                     IsSuccessful = session.PaymentStatus == "paid",
                     CustomerEmail = session.CustomerEmail ?? "",
-                    AmountTotal = session.AmountTotal ?? 0,
+                    AmountTotal = (session.AmountTotal ?? 0) / 100,  // Convert from cents to dollars
                     PaymentId = displayPaymentId,
                     EventTitle = eventTitle,
                     BookedSeats = bookedSeats,
@@ -463,6 +493,33 @@ namespace EventBooking.API.Controllers
         {
             try
             {
+                // OPTIMIZATION: Check database first (much faster than Stripe API call)
+                var existingBooking = await _context.Bookings
+                    .Include(b => b.Event)
+                    .FirstOrDefaultAsync(b => b.PaymentIntentId.Contains(sessionId) || 
+                                            b.Metadata.Contains(sessionId));
+
+                if (existingBooking != null)
+                {
+                    // Payment already processed - return cached result
+                    return Ok(new Services.WebhookPaymentStatusResponse
+                    {
+                        IsProcessed = true,
+                        ProcessedAt = existingBooking.CreatedAt,
+                        BookingDetails = new Services.BookingDetailsResponse
+                        {
+                            EventTitle = existingBooking.Event?.Title ?? "Unknown Event",
+                            CustomerName = $"{existingBooking.CustomerFirstName} {existingBooking.CustomerLastName}".Trim(),
+                            CustomerEmail = existingBooking.CustomerEmail,
+                            PaymentId = existingBooking.PaymentIntentId.Replace("pi_", ""),
+                            AmountTotal = existingBooking.TotalAmount,
+                            ProcessedAt = existingBooking.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                            TicketReference = existingBooking.PaymentIntentId.Replace("pi_", "")
+                        }
+                    });
+                }
+
+                // If not in database, check Stripe (but only if necessary)
                 var service = new SessionService();
                 var session = await service.GetAsync(sessionId);
 
@@ -473,50 +530,26 @@ namespace EventBooking.API.Controllers
 
                 if (session.PaymentStatus == "paid")
                 {
-                    // Always process the payment if it's paid and ensure booking confirmation
-                    await _bookingConfirmationService.ProcessPaymentSuccessAsync(sessionId, paymentIntentId);
-                    
                     // Extract customer info from metadata
                     session.Metadata.TryGetValue("eventTitle", out var eventTitle);
                     session.Metadata.TryGetValue("customerFirstName", out var firstName);
                     session.Metadata.TryGetValue("customerLastName", out var lastName);
                     string customerName = $"{firstName} {lastName}".Trim();
 
-                    // Look for payment record (should exist after processing)
-                    var payment = await _context.Payments
-                        .FirstOrDefaultAsync(p => p.PaymentIntentId == paymentIntentId);
-
-                    if (payment != null)
+                    // Check if webhook is still processing
+                    isProcessed = false;
+                    
+                    // Return minimal details for UI to show payment succeeded but booking still processing
+                    bookingDetails = new Services.BookingDetailsResponse
                     {
-                        isProcessed = true;
-                        
-                        bookingDetails = new Services.BookingDetailsResponse
-                        {
-                            EventTitle = eventTitle ?? "Unknown Event",
-                            CustomerName = customerName,
-                            CustomerEmail = session.CustomerEmail ?? "",
-                            PaymentId = paymentIntentId.Replace("pi_", ""),
-                            AmountTotal = (session.AmountTotal ?? 0) / 100m, // Convert from cents to dollars
-                            ProcessedAt = payment.UpdatedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
-                            TicketReference = paymentIntentId.Replace("pi_", "")
-                        };
-                    }
-                    else
-                    {
-                        // If no payment record found, still mark as processed since payment is successful
-                        isProcessed = true;
-                        
-                        bookingDetails = new Services.BookingDetailsResponse
-                        {
-                            EventTitle = eventTitle ?? "Unknown Event",
-                            CustomerName = customerName,
-                            CustomerEmail = session.CustomerEmail ?? "",
-                            PaymentId = paymentIntentId.Replace("pi_", ""),
-                            AmountTotal = (session.AmountTotal ?? 0) / 100m,
-                            ProcessedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
-                            TicketReference = paymentIntentId.Replace("pi_", "")
-                        };
-                    }
+                        EventTitle = eventTitle ?? "Unknown Event",
+                        CustomerName = customerName,
+                        CustomerEmail = session.CustomerEmail ?? "",
+                        PaymentId = paymentIntentId.Replace("pi_", ""),
+                        AmountTotal = (session.AmountTotal ?? 0) / 100m,
+                        ProcessedAt = "Processing...",
+                        TicketReference = paymentIntentId.Replace("pi_", "")
+                    };
                 }
 
                 return Ok(new Services.WebhookPaymentStatusResponse

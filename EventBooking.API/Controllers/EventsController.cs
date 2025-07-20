@@ -139,6 +139,13 @@ namespace EventBooking.API.Controllers
                 return BadRequest(ModelState);
             }
 
+            // Additional custom validation for title
+            if (!dto.IsValidTitle())
+            {
+                ModelState.AddModelError("Title", "Title cannot contain multiple consecutive spaces");
+                return BadRequest(ModelState);
+            }
+
             // Get the current user's organizer ID or use first available organizer for testing
             var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             Organizer organizer;

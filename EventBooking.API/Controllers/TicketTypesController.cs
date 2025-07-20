@@ -62,7 +62,8 @@ namespace EventBooking.API.Controllers
                 Price = dto.Price,
                 Description = dto.Description,
                 EventId = dto.EventId,
-                Color = dto.Color // Add the color from the DTO
+                Color = dto.Color, // Add the color from the DTO
+                MaxTickets = dto.MaxTickets // Add maximum tickets for General Admission events
             };
 
             // If venue has allocated seating and row assignments are provided
@@ -130,7 +131,8 @@ namespace EventBooking.API.Controllers
                         Price = dto.Price,
                         Description = dto.Description,
                         EventId = dto.EventId,
-                        Color = dto.Color // Add the color from the DTO
+                        Color = dto.Color, // Add the color from the DTO
+                        MaxTickets = dto.MaxTickets // Add maximum tickets for General Admission events
                     };
 
                     // If venue has allocated seating and row assignments are provided

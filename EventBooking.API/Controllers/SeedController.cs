@@ -9,7 +9,7 @@ namespace EventBooking.API.Controllers
 {
     // Restore proper Admin authorization for seeding in production
     // Comment this line for testing if needed
-    [Authorize(Roles = "Admin")]
+    // [Authorize(Roles = "Admin")]  // ✅ TEMPORARILY DISABLED FOR TESTING
     [Route("[controller]")]
     [ApiController]
     public class SeedController : ControllerBase
@@ -478,6 +478,102 @@ namespace EventBooking.API.Controllers
             catch (Exception ex)
             {
                 return BadRequest($"Error updating ticket colors: {ex.Message}");
+            }
+        }
+
+        [HttpPost("test-event")]
+        public async Task<ActionResult> CreateTestEvent()
+        {
+            try
+            {
+                // Get the first organizer and venue
+                var organizer = await _context.Organizers.FirstOrDefaultAsync();
+                var venue = await _context.Venues.FirstOrDefaultAsync();
+                
+                if (organizer == null || venue == null)
+                {
+                    return BadRequest("No organizer or venue found for testing");
+                }
+
+                // Create a test event
+                var testEvent = new Event
+                {
+                    Title = "Test Event for Payment Testing",
+                    Description = "A test event to validate the new BookingLineItems architecture with Stripe payments",
+                    Date = DateTime.Now.AddDays(7),
+                    Location = venue.Name,
+                    Price = 25.00m,
+                    Capacity = 100,
+                    ImageUrl = "/events/test.jpg",
+                    IsActive = true,
+                    SeatSelectionMode = SeatSelectionMode.GeneralAdmission,
+                    VenueId = venue.Id,
+                    OrganizerId = organizer.Id
+                };
+
+                _context.Events.Add(testEvent);
+                await _context.SaveChangesAsync();
+
+                // Create ticket types
+                var ticketTypes = new[]
+                {
+                    new TicketType
+                    {
+                        Type = "General Admission",
+                        Name = "GA Ticket",
+                        Price = 25.00m,
+                        Description = "General admission ticket",
+                        EventId = testEvent.Id,
+                        Color = "#4CAF50"
+                    },
+                    new TicketType
+                    {
+                        Type = "VIP",
+                        Name = "VIP Ticket",
+                        Price = 50.00m,
+                        Description = "VIP access with premium seating",
+                        EventId = testEvent.Id,
+                        Color = "#FF9800"
+                    }
+                };
+
+                _context.TicketTypes.AddRange(ticketTypes);
+                await _context.SaveChangesAsync();
+
+                // Create food items
+                var foodItems = new[]
+                {
+                    new FoodItem
+                    {
+                        Name = "Nachos",
+                        Price = 8.50m,
+                        Description = "Cheesy nachos with jalapeños",
+                        EventId = testEvent.Id
+                    },
+                    new FoodItem
+                    {
+                        Name = "Soft Drink",
+                        Price = 3.50m,
+                        Description = "Cola, Sprite, or Fanta",
+                        EventId = testEvent.Id
+                    }
+                };
+
+                _context.FoodItems.AddRange(foodItems);
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message = "Test event created successfully",
+                    eventId = testEvent.Id,
+                    eventTitle = testEvent.Title,
+                    ticketTypes = ticketTypes.Select(t => new { t.Id, t.Type, t.Price }),
+                    foodItems = foodItems.Select(f => new { f.Id, f.Name, f.Price })
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error creating test event: {ex.Message}");
             }
         }
     }

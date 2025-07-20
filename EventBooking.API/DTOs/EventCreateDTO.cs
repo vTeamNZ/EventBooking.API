@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using EventBooking.API.Models;
+using System.Text.RegularExpressions;
 
 namespace EventBooking.API.DTOs
 {
@@ -7,6 +8,8 @@ namespace EventBooking.API.DTOs
     {
         [Required(ErrorMessage = "Event title is required")]
         [MinLength(3, ErrorMessage = "Title must be at least 3 characters")]
+        [MaxLength(100, ErrorMessage = "Title cannot exceed 100 characters")]
+        [RegularExpression(@"^[a-zA-Z0-9\s]+$", ErrorMessage = "Title can only contain letters, numbers, and spaces")]
         public string Title { get; set; } = string.Empty;
 
         [Required(ErrorMessage = "Event description is required")]
@@ -37,5 +40,15 @@ namespace EventBooking.API.DTOs
         public string? StagePosition { get; set; }
 
         public bool IsActive { get; set; } = true;
+
+        // Custom validation method
+        public bool IsValidTitle()
+        {
+            if (string.IsNullOrEmpty(Title))
+                return false;
+
+            // Check for multiple consecutive spaces
+            return !Regex.IsMatch(Title, @"\s{2,}");
+        }
     }
 }

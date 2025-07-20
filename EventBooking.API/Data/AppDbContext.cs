@@ -24,11 +24,9 @@ namespace EventBooking.API.Data
         public DbSet<TicketType> TicketTypes { get; set; }
         public DbSet<FoodItem> FoodItems { get; set; }
         public DbSet<Booking> Bookings { get; set; }
-        public DbSet<BookingTicket> BookingTickets { get; set; }
-        public DbSet<BookingFood> BookingFoods { get; set; }
+        public DbSet<BookingLineItem> BookingLineItems { get; set; }
         public DbSet<SeatReservation> SeatReservations { get; set; }
         public DbSet<Venue> Venues { get; set; }
-        public DbSet<ETicketBooking> EventBookings { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -50,6 +48,43 @@ namespace EventBooking.API.Data
                 .WithMany()
                 .HasForeignKey(b => b.EventId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // Configure BookingLineItems relationships
+            modelBuilder.Entity<BookingLineItem>(entity =>
+            {
+                entity.Property(bli => bli.ItemType)
+                    .HasMaxLength(20)
+                    .IsRequired();
+
+                entity.Property(bli => bli.ItemName)
+                    .HasMaxLength(255)
+                    .IsRequired();
+
+                entity.Property(bli => bli.UnitPrice)
+                    .HasPrecision(18, 2);
+
+                entity.Property(bli => bli.TotalPrice)
+                    .HasPrecision(18, 2);
+
+                entity.Property(bli => bli.QRCode)
+                    .HasMaxLength(500);
+
+                entity.Property(bli => bli.Status)
+                    .HasMaxLength(50)
+                    .HasDefaultValue("Active");
+
+                entity.HasOne(bli => bli.Booking)
+                    .WithMany(b => b.BookingLineItems)
+                    .HasForeignKey(bli => bli.BookingId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // Create indexes for performance
+                entity.HasIndex(bli => bli.BookingId)
+                    .HasDatabaseName("IX_BookingLineItems_BookingId");
+
+                entity.HasIndex(bli => new { bli.ItemType, bli.ItemId })
+                    .HasDatabaseName("IX_BookingLineItems_ItemType_ItemId");
+            });
 
             // Configure Venue relationships
             modelBuilder.Entity<Event>()
@@ -177,30 +212,6 @@ namespace EventBooking.API.Data
                 .Property(t => t.TablePrice)
                 .HasPrecision(18, 2);
 
-            modelBuilder.Entity<BookingTicket>()
-                .HasOne(bt => bt.Booking)
-                .WithMany(b => b.BookingTickets)
-                .HasForeignKey(bt => bt.BookingId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            modelBuilder.Entity<BookingTicket>()
-                .HasOne(bt => bt.TicketType)
-                .WithMany()
-                .HasForeignKey(bt => bt.TicketTypeId)
-                .OnDelete(DeleteBehavior.Restrict);
-
-            modelBuilder.Entity<BookingFood>()
-                .HasOne(bf => bf.Booking)
-                .WithMany(b => b.BookingFoods)
-                .HasForeignKey(bf => bf.BookingId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            modelBuilder.Entity<BookingFood>()
-                .HasOne(bf => bf.FoodItem)
-                .WithMany()
-                .HasForeignKey(bf => bf.FoodItemId)
-                .OnDelete(DeleteBehavior.Restrict);
-
             // Configure SeatReservation
             modelBuilder.Entity<SeatReservation>()
                 .HasOne(sr => sr.Event)
@@ -234,7 +245,6 @@ namespace EventBooking.API.Data
                 .WithMany()
                 .HasForeignKey(r => r.EventId)
                 .OnDelete(DeleteBehavior.Cascade);
-
         }
 
     }

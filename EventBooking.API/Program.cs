@@ -135,6 +135,9 @@ builder.Services.AddScoped<IImageService, ImageService>();
 builder.Services.AddScoped<ISeatCreationService, SeatCreationService>();
 builder.Services.AddScoped<ISeatAllocationService, SeatAllocationService>();
 
+// Add Ticket Availability Service
+builder.Services.AddScoped<ITicketAvailabilityService, TicketAvailabilityService>();
+
 // Add Processing Fee Service
 builder.Services.AddScoped<IProcessingFeeService, ProcessingFeeService>();
 
@@ -204,7 +207,9 @@ builder.Services.AddAuthentication(options =>
 // Add Authorization
 builder.Services.AddAuthorization();
 
-// Add BookingConfirmationService
+// Add consolidated services for industry-standard architecture
+builder.Services.AddScoped<IQRTicketService, QRTicketService>();
+builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<IBookingConfirmationService, BookingConfirmationService>();
 

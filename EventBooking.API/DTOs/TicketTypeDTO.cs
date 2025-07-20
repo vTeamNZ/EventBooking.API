@@ -18,6 +18,9 @@ namespace EventBooking.API.DTOs
         // Color for visual representation in the UI
         public string Color { get; set; } = "#3B82F6"; // Default blue color
 
+        // Maximum number of tickets available for this type (for General Admission events)
+        public int? MaxTickets { get; set; }
+
         public List<SeatRowAssignmentDTO> SeatRows { get; set; } = new List<SeatRowAssignmentDTO>();
     }
 

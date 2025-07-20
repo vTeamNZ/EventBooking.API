@@ -62,6 +62,10 @@ namespace EventBooking.API.Models.Payment
         [Required]
         [Range(0.01, double.MaxValue)]
         public decimal UnitPrice { get; set; }
+        
+        // Seat/ticket association fields for individual food selection
+        public string? SeatTicketId { get; set; }
+        public string? SeatTicketType { get; set; }
     }
 
     public class CreateCheckoutSessionResponse
