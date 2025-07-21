@@ -124,7 +124,11 @@ builder.Services.AddDbContext<AppDbContext>(options =>
             errorNumbersToAdd: null);
         sqlOptions.CommandTimeout(300); // 5 minutes command timeout
     });
-    options.EnableSensitiveDataLogging(builder.Environment.IsDevelopment());
+    options.EnableSensitiveDataLogging(false); // Disable noisy EF logging for production
+    if (builder.Environment.IsDevelopment())
+    {
+        options.LogTo(Console.WriteLine, LogLevel.Warning); // Only warnings and errors
+    }
 });
 
 // Add Event Status Service
@@ -183,9 +187,7 @@ builder.Services.AddAuthentication(options =>
         },
         OnTokenValidated = context =>
         {
-            var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
-            logger.LogInformation("Token validated successfully for user: {UserId}", 
-                context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value);
+            // Token validation successful - no logging needed for production
             return Task.CompletedTask;
         }
     };

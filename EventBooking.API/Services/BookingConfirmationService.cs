@@ -19,19 +19,22 @@ namespace EventBooking.API.Services
         private readonly IConfiguration _configuration;
         private readonly IQRTicketService _qrTicketService;
         private readonly IEmailService _emailService;
+        private readonly IProcessingFeeService _processingFeeService;
 
         public BookingConfirmationService(
             AppDbContext context,
             ILogger<BookingConfirmationService> logger,
             IConfiguration configuration,
             IQRTicketService qrTicketService,
-            IEmailService emailService)
+            IEmailService emailService,
+            IProcessingFeeService processingFeeService)
         {
             _context = context;
             _logger = logger;
             _configuration = configuration;
             _qrTicketService = qrTicketService;
             _emailService = emailService;
+            _processingFeeService = processingFeeService;
         }
 
         public async Task<BookingConfirmationResult> ProcessPaymentSuccessAsync(string sessionId, string paymentIntentId)
@@ -213,7 +216,7 @@ namespace EventBooking.API.Services
 
                 // 🎯 CREATE BOOKING WITH NEW ARCHITECTURE
                 var totalAmount = (decimal)(session.AmountTotal ?? 0) / 100; // Convert from cents
-                var processingFee = CalculateProcessingFee(totalAmount);
+                var processingFee = _processingFeeService.CalculateProcessingFee(totalAmount, eventEntity);
                 
                 booking = new Booking
                 {
@@ -423,8 +426,8 @@ namespace EventBooking.API.Services
 
                         // Update seat status to booked
                         seat.Status = SeatStatus.Booked;
-                        seat.ReservedBy = session.CustomerEmail;
-                        seat.ReservedUntil = DateTime.UtcNow.AddDays(1); // Set expiry for cleanup if needed
+                        seat.ReservedBy = null; // ✅ CLEAR reservation info when booked
+                        seat.ReservedUntil = null; // ✅ CLEAR reservation timer when booked
                         
                         _logger.LogInformation("Updated seat {SeatNumber} to Booked status", seat.SeatNumber);
                     }
@@ -451,7 +454,8 @@ namespace EventBooking.API.Services
                                 BuyerEmail = session.CustomerEmail ?? "",
                                 OrganizerEmail = eventEntity.Organizer?.ContactEmail ?? "",
                                 BookingId = booking.Id, // ✅ Pass the booking ID
-                                FoodOrders = foodOrders // ✅ Pass food orders for PDF display
+                                FoodOrders = foodOrders, // ✅ Pass food orders for PDF display
+                                EventImageUrl = eventEntity.ImageUrl // ✅ Pass event flyer for professional appearance
                             };
 
                             var qrResult = await _qrTicketService.GenerateQRTicketAsync(qrRequest);
@@ -483,7 +487,8 @@ namespace EventBooking.API.Services
                                 eventTitle ?? eventEntity.Title,
                                 firstName ?? "Guest",
                                 eventEntity.Organizer?.ContactEmail ?? "",
-                                foodOrders
+                                foodOrders,
+                                eventEntity.ImageUrl // Pass event image URL
                             );
                         }
                         catch (Exception qrEx)
@@ -558,7 +563,8 @@ namespace EventBooking.API.Services
                                     eventTitle ?? eventEntity.Title,
                                     firstName ?? "Guest",
                                     eventEntity.Organizer?.ContactEmail ?? "",
-                                    foodOrders
+                                    foodOrders,
+                                    eventEntity.ImageUrl // Pass event image URL
                                 );
                             }
                             catch (Exception qrEx)
@@ -673,44 +679,6 @@ namespace EventBooking.API.Services
         }
 
         /// <summary>
-        /// Calculate processing fee based on configuration
-        /// </summary>
-        private decimal CalculateProcessingFee(decimal totalAmount)
-        {
-            try
-            {
-                // Get processing fee configuration from appsettings
-                var processingFeeEnabled = _configuration.GetValue<bool>("ProcessingFee:Enabled", false);
-                if (!processingFeeEnabled)
-                {
-                    return 0;
-                }
-
-                var feeType = _configuration.GetValue<string>("ProcessingFee:Type", "fixed");
-                
-                if (feeType.ToLower() == "percentage")
-                {
-                    var feePercentage = _configuration.GetValue<decimal>("ProcessingFee:Percentage", 0);
-                    var maxFee = _configuration.GetValue<decimal>("ProcessingFee:MaxFee", 999);
-                    
-                    var calculatedFee = totalAmount * (feePercentage / 100);
-                    return Math.Min(calculatedFee, maxFee);
-                }
-                else
-                {
-                    // Fixed fee
-                    var fixedFee = _configuration.GetValue<decimal>("ProcessingFee:FixedAmount", 0);
-                    return fixedFee;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error calculating processing fee for amount {Amount}", totalAmount);
-                return 0; // Return 0 if calculation fails
-            }
-        }
-
-        /// <summary>
         /// Extract food order information from BookingLineItems for display in PDFs and emails
         /// </summary>
         private List<FoodOrderInfo> ExtractFoodOrdersFromLineItems(List<BookingLineItem> bookingLineItems)
@@ -752,7 +720,8 @@ namespace EventBooking.API.Services
             string eventTitle, 
             string firstName, 
             string organizerEmail, 
-            List<FoodOrderInfo> foodOrders)
+            List<FoodOrderInfo> foodOrders,
+            string? eventImageUrl = null)
         {
             try
             {
@@ -789,7 +758,8 @@ namespace EventBooking.API.Services
                         eventTitle,
                         firstName,
                         ticketPdf,
-                        foodOrders
+                        foodOrders,
+                        eventImageUrl // Include event flyer in customer email
                     );
 
                     qrResult.CustomerEmailResult = new EmailDeliveryResult
@@ -826,7 +796,8 @@ namespace EventBooking.API.Services
                         firstName,
                         customerEmail,
                         ticketPdf,
-                        foodOrders
+                        foodOrders,
+                        eventImageUrl // Include event flyer in organizer email
                     );
 
                     qrResult.OrganizerEmailResult = new EmailDeliveryResult

@@ -89,10 +89,46 @@ namespace EventBooking.API.Controllers
                     }
                 };
 
-                // Add food details to metadata if present
+                // Add food details to metadata if present (with 500 character limit)
                 if (!string.IsNullOrEmpty(request.FoodDetails))
                 {
-                    options.Metadata.Add("foodDetails", request.FoodDetails);
+                    var foodDetails = request.FoodDetails;
+                    
+                    // Stripe metadata values are limited to 500 characters
+                    if (foodDetails.Length > 500)
+                    {
+                        // Create a condensed version for metadata
+                        try
+                        {
+                            var foodItems = JsonSerializer.Deserialize<List<dynamic>>(request.FoodDetails);
+                            var condensedItems = foodItems?.Take(3).Select(item => 
+                            {
+                                var itemObj = JsonSerializer.Deserialize<Dictionary<string, object>>(item.ToString());
+                                return new { 
+                                    Name = itemObj.GetValueOrDefault("Name", "Unknown").ToString(),
+                                    Qty = itemObj.GetValueOrDefault("Quantity", 0)
+                                };
+                            }).ToList();
+                            
+                            var condensed = JsonSerializer.Serialize(condensedItems);
+                            if (foodItems?.Count > 3)
+                            {
+                                condensed = condensed.TrimEnd(']') + $",{{\"Name\":\"...+{(foodItems.Count - 3)} more\",\"Qty\":0}}]";
+                            }
+                            
+                            foodDetails = condensed.Length <= 500 ? condensed : "FoodOrders:" + foodItems?.Count;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to condense food details, using count only");
+                            foodDetails = $"FoodItems:{request.FoodDetails.Count(c => c == '{')}";
+                        }
+                        
+                        _logger.LogWarning("Food details condensed from {OriginalLength} to {FinalLength} characters for Stripe metadata", 
+                            request.FoodDetails.Length, foodDetails.Length);
+                    }
+                    
+                    options.Metadata.Add("foodDetails", foodDetails);
                 }
 
                 _logger.LogInformation("Creating Stripe payment intent with amount: {Amount} {Currency}, Email: {Email}", 
@@ -460,6 +496,41 @@ namespace EventBooking.API.Controllers
                         processingFeeCalculation.ProcessingFeeAmount);
                 }
 
+                // Smart truncation for food details to handle Stripe's 500-character metadata limit
+                string foodDetailsForMetadata = "";
+                if (request.FoodDetails != null)
+                {
+                    var fullFoodDetails = System.Text.Json.JsonSerializer.Serialize(request.FoodDetails);
+                    if (fullFoodDetails.Length > 500)
+                    {
+                        try
+                        {
+                            // Create condensed version with just name and quantity
+                            var condensedItems = request.FoodDetails.Take(3).Select(f => new { 
+                                Name = f.Name?.Length > 15 ? f.Name.Substring(0, 15) : f.Name,
+                                Qty = f.Quantity 
+                            });
+                            var condensed = System.Text.Json.JsonSerializer.Serialize(condensedItems);
+                            if (request.FoodDetails.Count > 3)
+                            {
+                                condensed = condensed.TrimEnd(']') + $",...+{request.FoodDetails.Count - 3} more]";
+                            }
+                            foodDetailsForMetadata = condensed.Length <= 500 ? condensed : $"FoodOrders:{request.FoodDetails.Count}";
+                        }
+                        catch
+                        {
+                            foodDetailsForMetadata = $"FoodItems:{request.FoodDetails.Count}";
+                        }
+                        
+                        _logger.LogInformation("Truncated food details from {OriginalLength} to {NewLength} characters", 
+                            fullFoodDetails.Length, foodDetailsForMetadata.Length);
+                    }
+                    else
+                    {
+                        foodDetailsForMetadata = fullFoodDetails;
+                    }
+                }
+
                 var options = new SessionCreateOptions
                 {
                     // Remove PaymentMethodTypes to let Stripe automatically select based on Dashboard settings
@@ -477,7 +548,7 @@ namespace EventBooking.API.Controllers
                         { "eventId", request.EventId.ToString() },
                         { "eventTitle", request.EventTitle },
                         { "ticketDetails", System.Text.Json.JsonSerializer.Serialize(request.TicketDetails) },
-                        { "foodDetails", request.FoodDetails != null ? System.Text.Json.JsonSerializer.Serialize(request.FoodDetails) : "" },
+                        { "foodDetails", foodDetailsForMetadata },
                         { "customerFirstName", request.FirstName ?? "" },
                         { "customerLastName", request.LastName ?? "" },
                         { "customerMobile", request.Mobile ?? "" },

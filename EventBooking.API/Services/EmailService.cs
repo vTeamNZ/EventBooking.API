@@ -27,19 +27,19 @@ namespace EventBooking.API.Services
             _fromName = _configuration["Email:FromName"] ?? "KiwiLanka Events";
         }
 
-        public async Task<bool> SendTicketEmailAsync(string toEmail, string eventName, string firstName, byte[] ticketPdf, List<FoodOrderInfo>? foodOrders = null)
+        public async Task<bool> SendTicketEmailAsync(string toEmail, string eventName, string firstName, byte[] ticketPdf, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
         {
             var subject = $"Your eTicket for {eventName}";
-            var htmlBody = GenerateBuyerEmailHtml(eventName, firstName, foodOrders);
+            var htmlBody = GenerateBuyerEmailHtml(eventName, firstName, foodOrders, eventImageUrl);
             var attachmentFileName = $"eTicket_{eventName}_{firstName}.pdf";
 
             return await SendEmailWithAttachmentAsync(toEmail, subject, htmlBody, ticketPdf, attachmentFileName);
         }
 
-        public async Task<bool> SendOrganizerNotificationAsync(string organizerEmail, string eventName, string firstName, string buyerEmail, byte[] ticketPdf, List<FoodOrderInfo>? foodOrders = null)
+        public async Task<bool> SendOrganizerNotificationAsync(string organizerEmail, string eventName, string firstName, string buyerEmail, byte[] ticketPdf, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
         {
             var subject = $"New Booking for {eventName}";
-            var htmlBody = GenerateOrganizerEmailHtml(eventName, firstName, buyerEmail, foodOrders);
+            var htmlBody = GenerateOrganizerEmailHtml(eventName, firstName, buyerEmail, foodOrders, eventImageUrl);
             var attachmentFileName = $"eTicket_{eventName}_{firstName}.pdf";
 
             return await SendEmailWithAttachmentAsync(organizerEmail, subject, htmlBody, ticketPdf, attachmentFileName);
@@ -94,7 +94,7 @@ namespace EventBooking.API.Services
             }
         }
 
-        private string GenerateBuyerEmailHtml(string eventName, string firstName, List<FoodOrderInfo>? foodOrders = null)
+        private string GenerateBuyerEmailHtml(string eventName, string firstName, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
         {
             // Generate food orders HTML section
             var foodOrdersHtml = "";
@@ -133,6 +133,7 @@ namespace EventBooking.API.Services
         .footer {{ background: #333; color: white; padding: 15px; text-align: center; border-radius: 0 0 8px 8px; }}
         .ticket-info {{ background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #667eea; }}
         .button {{ display: inline-block; background: #667eea; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin: 10px 0; }}
+        .event-image {{ max-width: 100%; height: auto; border-radius: 8px; margin: 15px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
     </style>
 </head>
 <body>
@@ -144,6 +145,8 @@ namespace EventBooking.API.Services
         <div class='content'>
             <h2>Hi {firstName}!</h2>
             <p>Thank you for your booking! Your ticket for <strong>{eventName}</strong> is attached to this email.</p>
+            
+            {(!string.IsNullOrEmpty(eventImageUrl) ? $"<img src='{eventImageUrl}' alt='{eventName}' class='event-image' />" : "")}
             
             <div class='ticket-info'>
                 <h3>📅 Event Details</h3>
@@ -173,7 +176,7 @@ namespace EventBooking.API.Services
 </html>";
         }
 
-        private string GenerateOrganizerEmailHtml(string eventName, string firstName, string buyerEmail, List<FoodOrderInfo>? foodOrders = null)
+        private string GenerateOrganizerEmailHtml(string eventName, string firstName, string buyerEmail, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
         {
             // Generate food orders HTML section for organizer
             var foodOrdersHtml = "";
@@ -211,6 +214,7 @@ namespace EventBooking.API.Services
         .content {{ background: #f9f9f9; padding: 20px; }}
         .footer {{ background: #333; color: white; padding: 15px; text-align: center; border-radius: 0 0 8px 8px; }}
         .booking-info {{ background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #28a745; }}
+        .event-image {{ max-width: 100%; height: auto; border-radius: 8px; margin: 15px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
     </style>
 </head>
 <body>
@@ -223,11 +227,12 @@ namespace EventBooking.API.Services
             <h2>Booking Confirmation</h2>
             <p>You have received a new booking for your event.</p>
             
+            {(!string.IsNullOrEmpty(eventImageUrl) ? $"<img src='{eventImageUrl}' alt='{eventName}' class='event-image' />" : "")}
+            
             <div class='booking-info'>
                 <h3>📊 Booking Details</h3>
                 <p><strong>Event:</strong> {eventName}</p>
                 <p><strong>Attendee:</strong> {firstName}</p>
-                <p><strong>Buyer Email:</strong> {buyerEmail}</p>
                 <p><strong>Booking Time:</strong> {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC</p>
                 <p><strong>Status:</strong> ✅ Confirmed & Paid</p>
             </div>

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -30,9 +30,7 @@ namespace EventBooking.API.Controllers
         [HttpGet]
         public async Task<ActionResult<IEnumerable<object>>> GetOrganizers()
         {
-            Console.WriteLine("Organizer API hit.");
             var list = await _context.Organizers.Include(o => o.User).ToListAsync();
-            Console.WriteLine($"Found {list.Count} organizers.");
             
             // Transform the list to avoid circular reference issues
             var result = list.Select(organizer => new
@@ -88,7 +86,7 @@ namespace EventBooking.API.Controllers
 
         // PUT: api/Organizers/5
         // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
-        [AllowAnonymous]
+        [Authorize(Roles = "Admin,Organizer")] // ? SECURITY FIX: Only admins and organizers can update organizer info
         [HttpPut("{id}")]
         public async Task<IActionResult> PutOrganizer(int id, Organizer organizer)
         {
@@ -120,7 +118,7 @@ namespace EventBooking.API.Controllers
 
         // POST: api/Organizers
         // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
-        [AllowAnonymous]
+        [Authorize(Roles = "Admin")] // ? SECURITY FIX: Only admins can create new organizers
         [HttpPost]
         public async Task<ActionResult<Organizer>> PostOrganizer(Organizer organizer)
         {
@@ -131,7 +129,7 @@ namespace EventBooking.API.Controllers
         }
 
         // DELETE: api/Organizers/5
-        [AllowAnonymous]
+        [Authorize(Roles = "Admin")] // ? SECURITY FIX: Only admins can delete organizers
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteOrganizer(int id)
         {

@@ -38,7 +38,6 @@ namespace EventBooking.API.Models
         public string SeatDetails { get; set; } // JSON: {"row": "A", "number": 1, "seatId": 123}
         public string ItemDetails { get; set; } // JSON: Additional item-specific data
 
-        [StringLength(500)]
         public string QRCode { get; set; } // Generated QR for tickets
 
         [Required]

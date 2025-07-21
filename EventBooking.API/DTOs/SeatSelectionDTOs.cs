@@ -131,4 +131,12 @@ namespace EventBooking.API.DTOs
         public List<string> SeatNumbers { get; set; } = new List<string>();
         public string OrganizerEmail { get; set; } = string.Empty;
     }
+
+    public class PaymentConfirmationRequest
+    {
+        public int EventId { get; set; }
+        public string SessionId { get; set; } = string.Empty;
+        public string PaymentIntentId { get; set; } = string.Empty;
+        public List<string> SeatNumbers { get; set; } = new List<string>();
+    }
 }

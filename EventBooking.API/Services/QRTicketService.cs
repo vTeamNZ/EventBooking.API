@@ -81,14 +81,15 @@ namespace EventBooking.API.Services
                 _logger.LogInformation("QR Code generated successfully");
 
                 // Generate PDF ticket
-                _logger.LogInformation("Generating PDF ticket with food orders");
+                _logger.LogInformation("Generating PDF ticket with food orders and event image");
                 byte[] pdfTicket = await GenerateTicketPdfAsync(
                     request.EventId,
                     request.EventName,
                     request.SeatNumber,
                     request.FirstName,
                     qrCodeImage,
-                    request.FoodOrders); // ✅ Pass food orders to PDF generation
+                    request.FoodOrders, // ✅ Pass food orders to PDF generation
+                    request.EventImageUrl); // ✅ Pass event flyer URL
                 _logger.LogInformation("PDF ticket generated successfully");
 
                 // Save ticket locally
@@ -234,7 +235,7 @@ namespace EventBooking.API.Services
             return qrCodeImage;
         }
 
-        public async Task<byte[]> GenerateTicketPdfAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null)
+        public async Task<byte[]> GenerateTicketPdfAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
         {
             _logger.LogInformation("Generating PDF ticket for Event: {EventName}, Seat: {SeatNumber}, Attendee: {FirstName}, FoodItems: {FoodCount}",
                 eventName, seatNumber, firstName, foodOrders?.Count ?? 0);
@@ -252,9 +253,32 @@ namespace EventBooking.API.Services
                 var title = new Paragraph("🎫 EVENT TICKET", titleFont)
                 {
                     Alignment = Element.ALIGN_CENTER,
-                    SpacingAfter = 20
+                    SpacingAfter = 15
                 };
                 document.Add(title);
+
+                // ✅ ADD EVENT FLYER/IMAGE
+                if (!string.IsNullOrEmpty(eventImageUrl))
+                {
+                    try
+                    {
+                        var eventImageBytes = await _httpClient.GetByteArrayAsync(eventImageUrl);
+                        var eventImage = Image.GetInstance(eventImageBytes);
+                        
+                        // Scale the image to fit nicely - make it prominent but not overwhelming
+                        eventImage.ScaleToFit(400f, 200f);
+                        eventImage.Alignment = Element.ALIGN_CENTER;
+                        eventImage.SpacingAfter = 15;
+                        eventImage.SpacingBefore = 5;
+                        
+                        document.Add(eventImage);
+                        _logger.LogInformation("Successfully added event flyer to PDF ticket");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to load event image from {ImageUrl}, continuing without image", eventImageUrl);
+                    }
+                }
 
                 // Add event details
                 var headerFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 16, BaseColor.BLACK);

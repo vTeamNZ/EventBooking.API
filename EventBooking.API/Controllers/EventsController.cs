@@ -201,8 +201,8 @@ namespace EventBooking.API.Controllers
                     Capacity = dto.Capacity,
                     OrganizerId = organizer.Id,
                     ImageUrl = imageUrl,
-                    // Use venue's supported seat selection mode if available, otherwise use DTO value
-                    SeatSelectionMode = venue?.SeatSelectionMode ?? dto.SeatSelectionMode,
+                    // Use DTO's seat selection mode directly
+                    SeatSelectionMode = dto.SeatSelectionMode,
                     StagePosition = dto.StagePosition,
                     VenueId = dto.VenueId,
                     IsActive = false, // Keep for backward compatibility
@@ -218,14 +218,6 @@ namespace EventBooking.API.Controllers
                 // Log the event data to debug
                 logger.LogInformation("Event created with SeatSelectionMode: {SeatSelectionMode} (value: {ModeValue}), VenueId: {VenueId}", 
                     newEvent.SeatSelectionMode, (int)newEvent.SeatSelectionMode, newEvent.VenueId);
-                
-                // Force EventHall mode if we have a venue with allocated seating
-                if (newEvent.VenueId.HasValue && dto.SeatSelectionMode.ToString() == "1")
-                {
-                    newEvent.SeatSelectionMode = SeatSelectionMode.EventHall;
-                    await _context.SaveChangesAsync();
-                    logger.LogInformation("Forced SeatSelectionMode to EventHall");
-                }
                 
                 if (newEvent.VenueId.HasValue && newEvent.SeatSelectionMode == SeatSelectionMode.EventHall)
                 {
@@ -292,7 +284,6 @@ namespace EventBooking.API.Controllers
                 .OrderByDescending(e => e.Date)
                 .ToListAsync();
 
-            logger.LogInformation("GetOrganizerEvents: Found {Count} events for organizer {OrganizerId}", events.Count, organizer.Id);
             return events;
         }
 

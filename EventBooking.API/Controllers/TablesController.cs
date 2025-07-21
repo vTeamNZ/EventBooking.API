@@ -62,6 +62,7 @@ namespace EventBooking.API.Controllers
         // PUT: api/Tables/5
         // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
         [HttpPut("{id}")]
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can update tables
         public async Task<IActionResult> PutTable(int id, Table table)
         {
             if (id != table.Id)
