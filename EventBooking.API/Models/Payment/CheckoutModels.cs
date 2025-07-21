@@ -34,6 +34,7 @@ namespace EventBooking.API.Models.Payment
         public List<TicketLineItem>? TicketDetails { get; set; }
         public List<FoodLineItem>? FoodDetails { get; set; }
         public List<string>? SelectedSeats { get; set; }
+        public string? UserSessionId { get; set; }
     }
 
     public class TicketLineItem

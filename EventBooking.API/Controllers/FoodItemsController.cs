@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using EventBooking.API.Data;
 using EventBooking.API.Models;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EventBooking.API.Controllers
 {
@@ -18,6 +19,7 @@ namespace EventBooking.API.Controllers
 
         // GET: api/FoodItems/event/5
         [HttpGet("event/{eventId}")]
+        [AllowAnonymous] // ✅ Allow public viewing of food items for menu display
         public async Task<ActionResult<IEnumerable<FoodItem>>> GetFoodItemsForEvent(int eventId)
         {
             var foodItems = await _context.FoodItems
@@ -29,6 +31,7 @@ namespace EventBooking.API.Controllers
 
         // POST: api/FoodItems
         [HttpPost]
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can create food items
         public async Task<ActionResult<FoodItem>> CreateFoodItem(FoodItem foodItem)
         {
             _context.FoodItems.Add(foodItem);
@@ -39,6 +42,7 @@ namespace EventBooking.API.Controllers
 
         // PUT: api/FoodItems/5
         [HttpPut("{id}")]
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can update food items
         public async Task<IActionResult> UpdateFoodItem(int id, FoodItem foodItem)
         {
             if (id != foodItem.Id)
@@ -69,6 +73,7 @@ namespace EventBooking.API.Controllers
 
         // DELETE: api/FoodItems/5
         [HttpDelete("{id}")]
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can delete food items
         public async Task<IActionResult> DeleteFoodItem(int id)
         {
             var foodItem = await _context.FoodItems.FindAsync(id);

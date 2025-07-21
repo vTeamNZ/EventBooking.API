@@ -6,7 +6,7 @@ namespace EventBooking.API.Services
     {
         Task<QRTicketResult> GenerateQRTicketAsync(QRTicketRequest request);
         byte[] GenerateQrCode(string eventId, string eventName, string seatNumber, string firstName, string paymentGuid);
-        Task<byte[]> GenerateTicketPdfAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null);
+        Task<byte[]> GenerateTicketPdfAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null);
         string SaveTicketLocally(byte[] pdfTicket, string eventId, string eventName, string firstName, string paymentGuid);
         List<string> ListStoredTickets();
         bool DeleteStoredTicket(string fileName);
@@ -23,6 +23,7 @@ namespace EventBooking.API.Services
         public string OrganizerEmail { get; set; } = string.Empty;
         public int? BookingId { get; set; } // Link to main Bookings table
         public List<FoodOrderInfo> FoodOrders { get; set; } = new(); // ✅ Individual food orders for this ticket
+        public string? EventImageUrl { get; set; } // ✅ Event flyer/image URL for professional appearance
     }
 
     public class FoodOrderInfo

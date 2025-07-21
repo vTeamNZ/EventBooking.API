@@ -11,8 +11,7 @@ using Microsoft.AspNetCore.Authorization;
 
 namespace EventBooking.API.Controllers
 {
-    //[Authorize(Roles = "Admin,Attendee")]
-    [AllowAnonymous]
+    [Authorize] // ✅ SECURITY FIX: Require authentication for table management
     [Route("[controller]")]
     [ApiController]
     public class TablesController : ControllerBase
@@ -25,6 +24,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/Tables
+        [AllowAnonymous] // ✅ Allow public viewing of tables for seat selection
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Table>>> GetTables()
         {
@@ -32,6 +32,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/Tables/5
+        [AllowAnonymous] // ✅ Allow public viewing of specific tables for seat selection
         [HttpGet("{id}")]
         public async Task<ActionResult<Table>> GetTable(int id)
         {
@@ -46,6 +47,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/Tables/event/5/layout
+        [AllowAnonymous] // ✅ Allow public viewing of event table layouts for seat selection
         [HttpGet("event/{eventId}/layout")]
         public async Task<ActionResult<IEnumerable<Table>>> GetTablesForEvent(int eventId)
         {
@@ -60,6 +62,7 @@ namespace EventBooking.API.Controllers
         // PUT: api/Tables/5
         // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
         [HttpPut("{id}")]
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can update tables
         public async Task<IActionResult> PutTable(int id, Table table)
         {
             if (id != table.Id)
@@ -90,6 +93,7 @@ namespace EventBooking.API.Controllers
 
         // POST: api/Tables
         // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can create tables
         [HttpPost]
         public async Task<ActionResult<Table>> PostTable(Table table)
         {
@@ -100,6 +104,7 @@ namespace EventBooking.API.Controllers
         }
 
         // DELETE: api/Tables/5
+        [Authorize(Roles = "Admin")] // ✅ SECURITY FIX: Only admins can delete tables
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteTable(int id)
         {

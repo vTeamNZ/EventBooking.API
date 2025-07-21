@@ -19,28 +19,57 @@ namespace EventBooking.API.Services
         private readonly IConfiguration _configuration;
         private readonly IQRTicketService _qrTicketService;
         private readonly IEmailService _emailService;
+        private readonly IProcessingFeeService _processingFeeService;
 
         public BookingConfirmationService(
             AppDbContext context,
             ILogger<BookingConfirmationService> logger,
             IConfiguration configuration,
             IQRTicketService qrTicketService,
-            IEmailService emailService)
+            IEmailService emailService,
+            IProcessingFeeService processingFeeService)
         {
             _context = context;
             _logger = logger;
             _configuration = configuration;
             _qrTicketService = qrTicketService;
             _emailService = emailService;
+            _processingFeeService = processingFeeService;
         }
 
         public async Task<BookingConfirmationResult> ProcessPaymentSuccessAsync(string sessionId, string paymentIntentId)
         {
             var result = new BookingConfirmationResult();
+            Booking? booking = null; // ✅ Declare booking outside try block for exception handling
             
             try
             {
                 _logger.LogInformation("🏗️ Processing payment success using NEW BOOKINGLINEITEMS ARCHITECTURE for session: {SessionId}", sessionId);
+
+                // ✅ IDEMPOTENCY CHECK: Check if this payment has already been processed
+                var existingBooking = await _context.Bookings
+                    .Include(b => b.Event)
+                    .FirstOrDefaultAsync(b => b.PaymentIntentId == paymentIntentId);
+
+                if (existingBooking != null)
+                {
+                    _logger.LogInformation("🔄 IDEMPOTENCY: Payment {PaymentIntentId} already processed as booking {BookingId}, returning existing result", 
+                        paymentIntentId, existingBooking.Id);
+                    
+                    // Return the existing booking result instead of creating a new one
+                    return new BookingConfirmationResult
+                    {
+                        Success = true,
+                        EventTitle = existingBooking.Event?.Title ?? "Unknown Event",
+                        CustomerName = $"{existingBooking.CustomerFirstName} {existingBooking.CustomerLastName}".Trim(),
+                        CustomerEmail = existingBooking.CustomerEmail,
+                        BookedSeats = new List<string>(), // Could extract from metadata if needed
+                        AmountTotal = existingBooking.TotalAmount,
+                        TicketReference = paymentIntentId.Replace("pi_", ""),
+                        QRResults = new List<QRGenerationResult>(), // Already generated
+                        BookingId = existingBooking.Id
+                    };
+                }
 
                 // Get session from Stripe to extract metadata
                 var sessionService = new Stripe.Checkout.SessionService();
@@ -187,9 +216,9 @@ namespace EventBooking.API.Services
 
                 // 🎯 CREATE BOOKING WITH NEW ARCHITECTURE
                 var totalAmount = (decimal)(session.AmountTotal ?? 0) / 100; // Convert from cents
-                var processingFee = CalculateProcessingFee(totalAmount);
+                var processingFee = _processingFeeService.CalculateProcessingFee(totalAmount, eventEntity);
                 
-                var booking = new Booking
+                booking = new Booking
                 {
                     EventId = eventId,
                     CustomerEmail = session.CustomerEmail ?? "",
@@ -202,7 +231,7 @@ namespace EventBooking.API.Services
                     ProcessingFee = processingFee,
                     Currency = "NZD",
                     CreatedAt = DateTime.UtcNow,
-                    Status = "Active",
+                    Status = "Processing", // ✅ Start as Processing, will update to Active when complete
                     Metadata = JsonSerializer.Serialize(new 
                     {
                         sessionId = sessionId,
@@ -397,8 +426,8 @@ namespace EventBooking.API.Services
 
                         // Update seat status to booked
                         seat.Status = SeatStatus.Booked;
-                        seat.ReservedBy = session.CustomerEmail;
-                        seat.ReservedUntil = DateTime.UtcNow.AddDays(1); // Set expiry for cleanup if needed
+                        seat.ReservedBy = null; // ✅ CLEAR reservation info when booked
+                        seat.ReservedUntil = null; // ✅ CLEAR reservation timer when booked
                         
                         _logger.LogInformation("Updated seat {SeatNumber} to Booked status", seat.SeatNumber);
                     }
@@ -425,7 +454,8 @@ namespace EventBooking.API.Services
                                 BuyerEmail = session.CustomerEmail ?? "",
                                 OrganizerEmail = eventEntity.Organizer?.ContactEmail ?? "",
                                 BookingId = booking.Id, // ✅ Pass the booking ID
-                                FoodOrders = foodOrders // ✅ Pass food orders for PDF display
+                                FoodOrders = foodOrders, // ✅ Pass food orders for PDF display
+                                EventImageUrl = eventEntity.ImageUrl // ✅ Pass event flyer for professional appearance
                             };
 
                             var qrResult = await _qrTicketService.GenerateQRTicketAsync(qrRequest);
@@ -450,31 +480,16 @@ namespace EventBooking.API.Services
                                 ErrorMessage = qrResult.ErrorMessage
                             });
 
-                            // Send emails if QR generation was successful
-                            if (qrResult.Success && !qrResult.IsDuplicate)
-                            {
-                                // Read the generated PDF for email attachment
-                                byte[] ticketPdf = System.IO.File.ReadAllBytes(qrResult.TicketPath);
-
-                                // Send buyer email with food orders
-                                await _emailService.SendTicketEmailAsync(
-                                    session.CustomerEmail ?? "",
-                                    eventTitle ?? eventEntity.Title,
-                                    firstName ?? "Guest",
-                                    ticketPdf,
-                                    foodOrders
-                                );
-
-                                // Send organizer notification with food orders
-                                await _emailService.SendOrganizerNotificationAsync(
-                                    eventEntity.Organizer?.ContactEmail ?? "",
-                                    eventTitle ?? eventEntity.Title,
-                                    firstName ?? "Guest",
-                                    session.CustomerEmail ?? "",
-                                    ticketPdf,
-                                    foodOrders
-                                );
-                            }
+                            // Send confirmation emails if QR generation was successful
+                            await SendConfirmationEmailsAsync(
+                                qrResults.Last(), // Pass the QR result we just added
+                                session.CustomerEmail ?? "",
+                                eventTitle ?? eventEntity.Title,
+                                firstName ?? "Guest",
+                                eventEntity.Organizer?.ContactEmail ?? "",
+                                foodOrders,
+                                eventEntity.ImageUrl // Pass event image URL
+                            );
                         }
                         catch (Exception qrEx)
                         {
@@ -541,31 +556,16 @@ namespace EventBooking.API.Services
                                     ErrorMessage = qrResult.ErrorMessage
                                 });
 
-                                // Send emails if QR generation was successful
-                                if (qrResult.Success && !qrResult.IsDuplicate)
-                                {
-                                    // Read the generated PDF for email attachment
-                                    byte[] ticketPdf = System.IO.File.ReadAllBytes(qrResult.TicketPath);
-
-                                    // Send buyer email with food orders
-                                    await _emailService.SendTicketEmailAsync(
-                                        session.CustomerEmail ?? "",
-                                        eventTitle ?? eventEntity.Title,
-                                        firstName ?? "Guest",
-                                        ticketPdf,
-                                        foodOrders
-                                    );
-
-                                    // Send organizer notification with food orders
-                                    await _emailService.SendOrganizerNotificationAsync(
-                                        eventEntity.Organizer?.ContactEmail ?? "",
-                                        eventTitle ?? eventEntity.Title,
-                                        firstName ?? "Guest",
-                                        session.CustomerEmail ?? "",
-                                        ticketPdf,
-                                        foodOrders
-                                    );
-                                }
+                                // Send confirmation emails if QR generation was successful
+                                await SendConfirmationEmailsAsync(
+                                    qrResults.Last(), // Pass the QR result we just added
+                                    session.CustomerEmail ?? "",
+                                    eventTitle ?? eventEntity.Title,
+                                    firstName ?? "Guest",
+                                    eventEntity.Organizer?.ContactEmail ?? "",
+                                    foodOrders,
+                                    eventEntity.ImageUrl // Pass event image URL
+                                );
                             }
                             catch (Exception qrEx)
                             {
@@ -609,54 +609,72 @@ namespace EventBooking.API.Services
                 result.QRResults = qrResults;
                 result.BookingId = booking.Id;
                 
-                _logger.LogInformation("🎉 NEW ARCHITECTURE SUCCESS - Processed payment for session: {SessionId}, booking ID: {BookingId}, line items: {LineItemCount}, event type: {EventType}", 
-                    sessionId, booking.Id, bookingLineItems.Count, eventEntity.SeatSelectionMode);
+                // ✅ Calculate processing summary for user feedback
+                result.ProcessingSummary = new ProcessingSummary
+                {
+                    TotalTickets = qrResults.Count,
+                    SuccessfulQRGenerations = qrResults.Count(qr => qr.Success),
+                    FailedQRGenerations = qrResults.Count(qr => !qr.Success),
+                    SuccessfulCustomerEmails = qrResults.Count(qr => qr.CustomerEmailResult.Success),
+                    FailedCustomerEmails = qrResults.Count(qr => !qr.CustomerEmailResult.Success),
+                    SuccessfulOrganizerEmails = qrResults.Count(qr => qr.OrganizerEmailResult.Success),
+                    FailedOrganizerEmails = qrResults.Count(qr => !qr.OrganizerEmailResult.Success)
+                };
+                
+                // ✅ Mark booking as complete now that all processing is done
+                booking.Status = "Active";
+                booking.UpdatedAt = DateTime.UtcNow;
+                
+                // ✅ Store processing summary in metadata for frontend access
+                var enhancedMetadata = new 
+                {
+                    sessionId = sessionId,
+                    paymentMethod = "stripe",
+                    eventType = eventEntity.SeatSelectionMode.ToString(),
+                    selectedSeats = selectedSeats,
+                    source = "stripe_checkout",
+                    processingSummary = result.ProcessingSummary,
+                    qrResults = qrResults.Select(qr => new {
+                        seatNumber = qr.SeatNumber,
+                        success = qr.Success,
+                        hasTicketPath = !string.IsNullOrEmpty(qr.TicketPath),
+                        customerEmailSuccess = qr.CustomerEmailResult.Success,
+                        organizerEmailSuccess = qr.OrganizerEmailResult.Success,
+                        customerEmailError = qr.CustomerEmailResult.ErrorMessage,
+                        organizerEmailError = qr.OrganizerEmailResult.ErrorMessage
+                    }).ToList(),
+                    processedAt = DateTime.UtcNow
+                };
+                
+                booking.Metadata = JsonSerializer.Serialize(enhancedMetadata);
+                await _context.SaveChangesAsync();
+                
+                _logger.LogInformation("🎉 NEW ARCHITECTURE SUCCESS - Processed payment for session: {SessionId}, booking ID: {BookingId}, line items: {LineItemCount}, event type: {EventType}, summary: {Summary}", 
+                    sessionId, booking.Id, bookingLineItems.Count, eventEntity.SeatSelectionMode, result.ProcessingSummary.GetStatusMessage());
                 return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error processing payment success for session: {SessionId}", sessionId);
+                
+                // ✅ Mark booking as failed if any error occurs and booking was created
+                if (booking != null)
+                {
+                    try 
+                    {
+                        booking.Status = "Failed";
+                        booking.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                    }
+                    catch (Exception saveEx)
+                    {
+                        _logger.LogError(saveEx, "Failed to update booking status to Failed for session: {SessionId}", sessionId);
+                    }
+                }
+                
                 result.Success = false;
                 result.ErrorMessage = ex.Message;
                 return result;
-            }
-        }
-
-        /// <summary>
-        /// Calculate processing fee based on configuration
-        /// </summary>
-        private decimal CalculateProcessingFee(decimal totalAmount)
-        {
-            try
-            {
-                // Get processing fee configuration from appsettings
-                var processingFeeEnabled = _configuration.GetValue<bool>("ProcessingFee:Enabled", false);
-                if (!processingFeeEnabled)
-                {
-                    return 0;
-                }
-
-                var feeType = _configuration.GetValue<string>("ProcessingFee:Type", "fixed");
-                
-                if (feeType.ToLower() == "percentage")
-                {
-                    var feePercentage = _configuration.GetValue<decimal>("ProcessingFee:Percentage", 0);
-                    var maxFee = _configuration.GetValue<decimal>("ProcessingFee:MaxFee", 999);
-                    
-                    var calculatedFee = totalAmount * (feePercentage / 100);
-                    return Math.Min(calculatedFee, maxFee);
-                }
-                else
-                {
-                    // Fixed fee
-                    var fixedFee = _configuration.GetValue<decimal>("ProcessingFee:FixedAmount", 0);
-                    return fixedFee;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error calculating processing fee for amount {Amount}", totalAmount);
-                return 0; // Return 0 if calculation fails
             }
         }
 
@@ -690,6 +708,148 @@ namespace EventBooking.API.Services
             {
                 _logger.LogError(ex, "Error extracting food orders from BookingLineItems");
                 return new List<FoodOrderInfo>(); // Return empty list if extraction fails
+            }
+        }
+
+        /// <summary>
+        /// Send confirmation emails for successful QR ticket generation and track results
+        /// </summary>
+        private async Task SendConfirmationEmailsAsync(
+            QRGenerationResult qrResult, 
+            string customerEmail, 
+            string eventTitle, 
+            string firstName, 
+            string organizerEmail, 
+            List<FoodOrderInfo> foodOrders,
+            string? eventImageUrl = null)
+        {
+            try
+            {
+                if (!qrResult.Success || string.IsNullOrEmpty(qrResult.TicketPath))
+                {
+                    // Set email results as skipped for failed QR generation
+                    qrResult.CustomerEmailResult = new EmailDeliveryResult
+                    {
+                        Success = false,
+                        ErrorMessage = "Skipped - QR generation failed",
+                        RecipientEmail = customerEmail,
+                        EmailType = "Customer"
+                    };
+                    
+                    qrResult.OrganizerEmailResult = new EmailDeliveryResult
+                    {
+                        Success = false,
+                        ErrorMessage = "Skipped - QR generation failed",
+                        RecipientEmail = organizerEmail,
+                        EmailType = "Organizer"
+                    };
+                    
+                    return;
+                }
+
+                // Read the generated PDF for email attachment
+                byte[] ticketPdf = System.IO.File.ReadAllBytes(qrResult.TicketPath);
+
+                // ✅ Send customer email and track result
+                try
+                {
+                    bool customerEmailSuccess = await _emailService.SendTicketEmailAsync(
+                        customerEmail,
+                        eventTitle,
+                        firstName,
+                        ticketPdf,
+                        foodOrders,
+                        eventImageUrl // Include event flyer in customer email
+                    );
+
+                    qrResult.CustomerEmailResult = new EmailDeliveryResult
+                    {
+                        Success = customerEmailSuccess,
+                        SentAt = customerEmailSuccess ? DateTime.UtcNow : null,
+                        RecipientEmail = customerEmail,
+                        EmailType = "Customer",
+                        ErrorMessage = customerEmailSuccess ? null : "Email delivery failed"
+                    };
+
+                    _logger.LogInformation("📧 Customer email {Status} for {EventTitle} to {CustomerEmail}", 
+                        customerEmailSuccess ? "sent successfully" : "failed", eventTitle, customerEmail);
+                }
+                catch (Exception emailEx)
+                {
+                    qrResult.CustomerEmailResult = new EmailDeliveryResult
+                    {
+                        Success = false,
+                        ErrorMessage = emailEx.Message,
+                        RecipientEmail = customerEmail,
+                        EmailType = "Customer"
+                    };
+                    
+                    _logger.LogError(emailEx, "Failed to send customer email for {EventTitle} to {CustomerEmail}", eventTitle, customerEmail);
+                }
+
+                // ✅ Send organizer email and track result
+                try
+                {
+                    bool organizerEmailSuccess = await _emailService.SendOrganizerNotificationAsync(
+                        organizerEmail,
+                        eventTitle,
+                        firstName,
+                        customerEmail,
+                        ticketPdf,
+                        foodOrders,
+                        eventImageUrl // Include event flyer in organizer email
+                    );
+
+                    qrResult.OrganizerEmailResult = new EmailDeliveryResult
+                    {
+                        Success = organizerEmailSuccess,
+                        SentAt = organizerEmailSuccess ? DateTime.UtcNow : null,
+                        RecipientEmail = organizerEmail,
+                        EmailType = "Organizer",
+                        ErrorMessage = organizerEmailSuccess ? null : "Email delivery failed"
+                    };
+
+                    _logger.LogInformation("📧 Organizer email {Status} for {EventTitle} to {OrganizerEmail}", 
+                        organizerEmailSuccess ? "sent successfully" : "failed", eventTitle, organizerEmail);
+                }
+                catch (Exception emailEx)
+                {
+                    qrResult.OrganizerEmailResult = new EmailDeliveryResult
+                    {
+                        Success = false,
+                        ErrorMessage = emailEx.Message,
+                        RecipientEmail = organizerEmail,
+                        EmailType = "Organizer"
+                    };
+                    
+                    _logger.LogError(emailEx, "Failed to send organizer email for {EventTitle} to {OrganizerEmail}", eventTitle, organizerEmail);
+                }
+
+                // ✅ Overall success logging
+                bool allEmailsSuccessful = qrResult.CustomerEmailResult.Success && qrResult.OrganizerEmailResult.Success;
+                _logger.LogInformation("📧 Email summary for {EventTitle}: Customer={CustomerSuccess}, Organizer={OrganizerSuccess}", 
+                    eventTitle, qrResult.CustomerEmailResult.Success, qrResult.OrganizerEmailResult.Success);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error in SendConfirmationEmailsAsync for {EventTitle}", eventTitle);
+                
+                // Set both email results as failed for unexpected errors
+                qrResult.CustomerEmailResult = new EmailDeliveryResult
+                {
+                    Success = false,
+                    ErrorMessage = $"Unexpected error: {ex.Message}",
+                    RecipientEmail = customerEmail,
+                    EmailType = "Customer"
+                };
+                
+                qrResult.OrganizerEmailResult = new EmailDeliveryResult
+                {
+                    Success = false,
+                    ErrorMessage = $"Unexpected error: {ex.Message}",
+                    RecipientEmail = organizerEmail,
+                    EmailType = "Organizer"
+                };
             }
         }
     }

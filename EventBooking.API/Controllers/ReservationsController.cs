@@ -14,9 +14,7 @@ using System.Threading.Tasks;
 
 namespace EventBooking.API.Controllers
 {
-    //[Authorize(Roles = "Admin,Attendee")]
-    [AllowAnonymous]
-    //[Authorize]
+    [Authorize] // ✅ SECURITY FIX: Require authentication for reservation management
     [Route("[controller]")]
     [ApiController]
     public class ReservationsController : ControllerBase
@@ -31,6 +29,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/Reservations
+        [Authorize(Roles = "Admin")] // ✅ Only admins can view all reservations
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Reservation>>> GetReservations()
         {
@@ -38,6 +37,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/Reservations/5
+        [Authorize(Roles = "Admin")] // ✅ Only admins can view specific reservations
         [HttpGet("{id}")]
         public async Task<ActionResult<Reservation>> GetReservation(int id)
         {
@@ -119,6 +119,7 @@ namespace EventBooking.API.Controllers
         }*/
 
         // DELETE: api/Reservations/5
+        [Authorize(Roles = "Admin")] // ✅ SECURITY FIX: Only admins can delete reservations
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteReservation(int id)
         {
@@ -137,121 +138,6 @@ namespace EventBooking.API.Controllers
         private bool ReservationExists(int id)
         {
             return _context.Reservations.Any(e => e.Id == id);
-        }
-
-        // POST: api/Reservations/hold
-        [HttpPost("hold")]
-        public async Task<IActionResult> HoldSeats([FromBody] List<SeatHoldRequest> seatHolds)
-        {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(userId))
-                return Unauthorized();
-
-            // Check if any seats are already reserved
-            foreach (var hold in seatHolds)
-            {
-                var existingReservation = await _context.Reservations
-                    .FirstOrDefaultAsync(r => r.EventId == hold.EventId && 
-                                            r.Row == hold.Row && 
-                                            r.Number == hold.Number && 
-                                            r.IsReserved);
-                
-                if (existingReservation != null)
-                {
-                    return BadRequest($"Seat {hold.Row}-{hold.Number} is already reserved");
-                }
-            }
-
-            // Create temporary holds (expires in 10 minutes)
-            var expiry = DateTime.UtcNow.AddMinutes(10);
-            var holds = seatHolds.Select(hold => new Reservation
-            {
-                EventId = hold.EventId,
-                Row = hold.Row,
-                Number = hold.Number,
-                IsReserved = false, // Temporary hold
-                UserId = userId,
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = expiry
-            }).ToList();
-
-            _context.Reservations.AddRange(holds);
-            await _context.SaveChangesAsync();
-
-            return Ok(new { message = "Seats held temporarily", expiresAt = expiry });
-        }
-
-        // POST: api/Reservations/release
-        [HttpPost("release")]
-        public async Task<IActionResult> ReleaseSeats([FromBody] List<SeatHoldRequest> seatHolds)
-        {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(userId))
-                return Unauthorized();
-
-            foreach (var hold in seatHolds)
-            {
-                var reservation = await _context.Reservations
-                    .FirstOrDefaultAsync(r => r.EventId == hold.EventId && 
-                                            r.Row == hold.Row && 
-                                            r.Number == hold.Number && 
-                                            r.UserId == userId &&
-                                            !r.IsReserved); // Only temporary holds
-
-                if (reservation != null)
-                {
-                    _context.Reservations.Remove(reservation);
-                }
-            }
-
-            await _context.SaveChangesAsync();
-            return Ok(new { message = "Seats released" });
-        }
-
-        // GET: api/Reservations/event/5/status
-        [HttpGet("event/{eventId}/status")]
-        public async Task<ActionResult> GetReservationStatus(int eventId)
-        {
-            var reservations = await _context.Reservations
-                .Where(r => r.EventId == eventId)
-                .Select(r => new {
-                    r.Row,
-                    r.Number,
-                    r.IsReserved,
-                    r.UserId,
-                    r.ExpiresAt
-                })
-                .ToListAsync();
-
-            // Clean up expired holds
-            var expiredHolds = reservations
-                .Where(r => !r.IsReserved && r.ExpiresAt.HasValue && r.ExpiresAt < DateTime.UtcNow)
-                .ToList();
-
-            if (expiredHolds.Any())
-            {
-                var toRemove = await _context.Reservations
-                    .Where(r => r.EventId == eventId && 
-                              !r.IsReserved && 
-                              r.ExpiresAt.HasValue && 
-                              r.ExpiresAt < DateTime.UtcNow)
-                    .ToListAsync();
-                
-                _context.Reservations.RemoveRange(toRemove);
-                await _context.SaveChangesAsync();
-            }
-
-            var currentReservations = reservations
-                .Where(r => r.IsReserved || (r.ExpiresAt.HasValue && r.ExpiresAt >= DateTime.UtcNow))
-                .Select(r => new {
-                    seat = $"{r.Row}-{r.Number}",
-                    isReserved = r.IsReserved,
-                    isHeld = !r.IsReserved && r.ExpiresAt.HasValue && r.ExpiresAt >= DateTime.UtcNow,
-                    expiresAt = r.ExpiresAt
-                })
-                .ToList();
-
-            return Ok(currentReservations);
         }
 
         // POST: api/reservations/reserve-tickets

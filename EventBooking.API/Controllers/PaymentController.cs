@@ -10,6 +10,7 @@ using EventBooking.API.Models.Payments;
 using EventBooking.API.Data;
 using EventBooking.API.DTOs;
 using EventBooking.API.Services;
+using System.Text.Json;
 
 namespace EventBooking.API.Controllers
 {
@@ -88,10 +89,46 @@ namespace EventBooking.API.Controllers
                     }
                 };
 
-                // Add food details to metadata if present
+                // Add food details to metadata if present (with 500 character limit)
                 if (!string.IsNullOrEmpty(request.FoodDetails))
                 {
-                    options.Metadata.Add("foodDetails", request.FoodDetails);
+                    var foodDetails = request.FoodDetails;
+                    
+                    // Stripe metadata values are limited to 500 characters
+                    if (foodDetails.Length > 500)
+                    {
+                        // Create a condensed version for metadata
+                        try
+                        {
+                            var foodItems = JsonSerializer.Deserialize<List<dynamic>>(request.FoodDetails);
+                            var condensedItems = foodItems?.Take(3).Select(item => 
+                            {
+                                var itemObj = JsonSerializer.Deserialize<Dictionary<string, object>>(item.ToString());
+                                return new { 
+                                    Name = itemObj.GetValueOrDefault("Name", "Unknown").ToString(),
+                                    Qty = itemObj.GetValueOrDefault("Quantity", 0)
+                                };
+                            }).ToList();
+                            
+                            var condensed = JsonSerializer.Serialize(condensedItems);
+                            if (foodItems?.Count > 3)
+                            {
+                                condensed = condensed.TrimEnd(']') + $",{{\"Name\":\"...+{(foodItems.Count - 3)} more\",\"Qty\":0}}]";
+                            }
+                            
+                            foodDetails = condensed.Length <= 500 ? condensed : "FoodOrders:" + foodItems?.Count;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to condense food details, using count only");
+                            foodDetails = $"FoodItems:{request.FoodDetails.Count(c => c == '{')}";
+                        }
+                        
+                        _logger.LogWarning("Food details condensed from {OriginalLength} to {FinalLength} characters for Stripe metadata", 
+                            request.FoodDetails.Length, foodDetails.Length);
+                    }
+                    
+                    options.Metadata.Add("foodDetails", foodDetails);
                 }
 
                 _logger.LogInformation("Creating Stripe payment intent with amount: {Amount} {Currency}, Email: {Email}", 
@@ -156,6 +193,18 @@ namespace EventBooking.API.Controllers
                                 await _bookingConfirmationService.ProcessPaymentSuccessAsync(session.Id, session.PaymentIntentId);
                             }
                         }
+                        else if (stripeEvent.Type == "payment_intent.succeeded")
+                        {
+                            var paymentIntent = stripeEvent.Data.Object as PaymentIntent;
+                            _logger.LogInformation("🎯 Payment intent succeeded: {PaymentIntentId}", paymentIntent?.Id);
+                            
+                            // ✅ VERIFICATION ONLY: Log confirmation that payment actually succeeded
+                            // This is a safety net to verify payment status, not to create bookings
+                            if (paymentIntent != null)
+                            {
+                                await VerifyPaymentIntentSucceeded(paymentIntent);
+                            }
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -173,6 +222,47 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error handling Stripe webhook: {Message}", ex.Message);
                 return Ok(new { received = true });
+            }
+        }
+
+        /// <summary>
+        /// 🔍 VERIFICATION ONLY: Confirms payment intent actually succeeded
+        /// This is a safety net to verify payment status at Stripe's end
+        /// Does NOT create database records - only verification and logging
+        /// </summary>
+        private async Task VerifyPaymentIntentSucceeded(PaymentIntent paymentIntent)
+        {
+            try
+            {
+                _logger.LogInformation("🔍 VERIFICATION: Confirming payment_intent.succeeded for PaymentIntentId: {PaymentIntentId}", paymentIntent.Id);
+
+                // Check if we have an existing payment record for this intent
+                var existingPayment = await _context.Payments
+                    .FirstOrDefaultAsync(p => p.PaymentIntentId == paymentIntent.Id);
+                    
+                if (existingPayment != null)
+                {
+                    _logger.LogInformation("✅ VERIFICATION PASSED: Found existing payment record for PaymentIntent: {PaymentIntentId}, Status: {Status}", 
+                        paymentIntent.Id, existingPayment.Status);
+                        
+                    // Update payment status if needed
+                    if (existingPayment.Status != "succeeded")
+                    {
+                        existingPayment.Status = "succeeded";
+                        existingPayment.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                        _logger.LogInformation("📝 Updated payment status to 'succeeded' for PaymentIntent: {PaymentIntentId}", paymentIntent.Id);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ VERIFICATION WARNING: No payment record found for PaymentIntent: {PaymentIntentId}", paymentIntent.Id);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Error during payment intent verification for PaymentIntentId: {PaymentIntentId}", paymentIntent.Id);
+                // Don't throw - webhook should always return 200 to Stripe
             }
         }
 
@@ -200,7 +290,7 @@ namespace EventBooking.API.Controllers
             }
         }
 
-        private async Task<bool> ValidateSelectedSeats(int eventId, List<string> selectedSeats)
+        private async Task<bool> ValidateSelectedSeats(int eventId, List<string> selectedSeats, string? userSessionId = null)
         {
             if (selectedSeats == null || !selectedSeats.Any())
             {
@@ -212,8 +302,40 @@ namespace EventBooking.API.Controllers
                 var seat = await _context.Seats
                     .FirstOrDefaultAsync(s => s.EventId == eventId && s.SeatNumber == seatNumber);
 
-                if (seat == null || (seat.Status != SeatStatus.Available && seat.Status != SeatStatus.Reserved))
+                if (seat == null)
                 {
+                    _logger.LogWarning("Seat validation failed: Seat {SeatNumber} not found for event {EventId}", seatNumber, eventId);
+                    return false;
+                }
+
+                // Seat must be available OR reserved by the current user's session
+                if (seat.Status == SeatStatus.Available)
+                {
+                    continue; // Available seats are fine
+                }
+                
+                if (seat.Status == SeatStatus.Reserved)
+                {
+                    // For reserved seats, check if it's reserved by the current user's session
+                    if (string.IsNullOrEmpty(userSessionId) || seat.ReservedBy != userSessionId)
+                    {
+                        _logger.LogWarning("Seat validation failed: Seat {SeatNumber} is reserved by another session. Current session: {UserSessionId}, Seat reserved by: {ReservedBy}", 
+                            seatNumber, userSessionId, seat.ReservedBy);
+                        return false;
+                    }
+                    
+                    // Check if reservation hasn't expired
+                    if (seat.ReservedUntil.HasValue && seat.ReservedUntil.Value < DateTime.UtcNow)
+                    {
+                        _logger.LogWarning("Seat validation failed: Seat {SeatNumber} reservation has expired at {ReservedUntil}", 
+                            seatNumber, seat.ReservedUntil.Value);
+                        return false;
+                    }
+                }
+                else
+                {
+                    // Seat is in some other status (booked, unavailable, etc.)
+                    _logger.LogWarning("Seat validation failed: Seat {SeatNumber} has invalid status {Status}", seatNumber, seat.Status);
                     return false;
                 }
             }
@@ -256,10 +378,11 @@ namespace EventBooking.API.Controllers
                         return BadRequest("Selected seats are required for this event");
                     }
                     
-                    var seatsValid = await ValidateSelectedSeats(request.EventId, request.SelectedSeats);
+                    // Validate seats with session ownership check
+                    var seatsValid = await ValidateSelectedSeats(request.EventId, request.SelectedSeats, request.UserSessionId);
                     if (!seatsValid)
                     {
-                        return BadRequest("One or more selected seats are not available");
+                        return BadRequest("One or more selected seats are not available or not reserved by your session");
                     }
                 }
                 else if (eventItem.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
@@ -373,6 +496,41 @@ namespace EventBooking.API.Controllers
                         processingFeeCalculation.ProcessingFeeAmount);
                 }
 
+                // Smart truncation for food details to handle Stripe's 500-character metadata limit
+                string foodDetailsForMetadata = "";
+                if (request.FoodDetails != null)
+                {
+                    var fullFoodDetails = System.Text.Json.JsonSerializer.Serialize(request.FoodDetails);
+                    if (fullFoodDetails.Length > 500)
+                    {
+                        try
+                        {
+                            // Create condensed version with just name and quantity
+                            var condensedItems = request.FoodDetails.Take(3).Select(f => new { 
+                                Name = f.Name?.Length > 15 ? f.Name.Substring(0, 15) : f.Name,
+                                Qty = f.Quantity 
+                            });
+                            var condensed = System.Text.Json.JsonSerializer.Serialize(condensedItems);
+                            if (request.FoodDetails.Count > 3)
+                            {
+                                condensed = condensed.TrimEnd(']') + $",...+{request.FoodDetails.Count - 3} more]";
+                            }
+                            foodDetailsForMetadata = condensed.Length <= 500 ? condensed : $"FoodOrders:{request.FoodDetails.Count}";
+                        }
+                        catch
+                        {
+                            foodDetailsForMetadata = $"FoodItems:{request.FoodDetails.Count}";
+                        }
+                        
+                        _logger.LogInformation("Truncated food details from {OriginalLength} to {NewLength} characters", 
+                            fullFoodDetails.Length, foodDetailsForMetadata.Length);
+                    }
+                    else
+                    {
+                        foodDetailsForMetadata = fullFoodDetails;
+                    }
+                }
+
                 var options = new SessionCreateOptions
                 {
                     // Remove PaymentMethodTypes to let Stripe automatically select based on Dashboard settings
@@ -390,7 +548,7 @@ namespace EventBooking.API.Controllers
                         { "eventId", request.EventId.ToString() },
                         { "eventTitle", request.EventTitle },
                         { "ticketDetails", System.Text.Json.JsonSerializer.Serialize(request.TicketDetails) },
-                        { "foodDetails", request.FoodDetails != null ? System.Text.Json.JsonSerializer.Serialize(request.FoodDetails) : "" },
+                        { "foodDetails", foodDetailsForMetadata },
                         { "customerFirstName", request.FirstName ?? "" },
                         { "customerLastName", request.LastName ?? "" },
                         { "customerMobile", request.Mobile ?? "" },
@@ -501,22 +659,126 @@ namespace EventBooking.API.Controllers
 
                 if (existingBooking != null)
                 {
-                    // Payment already processed - return cached result
-                    return Ok(new Services.WebhookPaymentStatusResponse
+                    // ✅ SAFE: Check if processing is actually complete
+                    if (existingBooking.Status == "Active")
                     {
-                        IsProcessed = true,
-                        ProcessedAt = existingBooking.CreatedAt,
-                        BookingDetails = new Services.BookingDetailsResponse
+                        // Extract processing details from metadata
+                        var qrResults = new List<Services.QRGenerationResult>();
+                        var processingSummary = new Services.ProcessingSummary();
+                        
+                        try 
                         {
-                            EventTitle = existingBooking.Event?.Title ?? "Unknown Event",
-                            CustomerName = $"{existingBooking.CustomerFirstName} {existingBooking.CustomerLastName}".Trim(),
-                            CustomerEmail = existingBooking.CustomerEmail,
-                            PaymentId = existingBooking.PaymentIntentId.Replace("pi_", ""),
-                            AmountTotal = existingBooking.TotalAmount,
-                            ProcessedAt = existingBooking.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
-                            TicketReference = existingBooking.PaymentIntentId.Replace("pi_", "")
+                            if (!string.IsNullOrEmpty(existingBooking.Metadata))
+                            {
+                                var metadata = JsonSerializer.Deserialize<JsonElement>(existingBooking.Metadata);
+                                
+                                // Extract QR results if available
+                                if (metadata.TryGetProperty("qrResults", out var qrResultsElement))
+                                {
+                                    foreach (var qrElement in qrResultsElement.EnumerateArray())
+                                    {
+                                        var qrResult = new Services.QRGenerationResult
+                                        {
+                                            SeatNumber = qrElement.TryGetProperty("seatNumber", out var seatNum) ? seatNum.GetString() ?? "" : "",
+                                            Success = qrElement.TryGetProperty("success", out var success) && success.GetBoolean(),
+                                            TicketPath = qrElement.TryGetProperty("hasTicketPath", out var hasPath) && hasPath.GetBoolean() ? "Generated" : null,
+                                            CustomerEmailResult = new Services.EmailDeliveryResult
+                                            {
+                                                Success = qrElement.TryGetProperty("customerEmailSuccess", out var custEmailSuccess) && custEmailSuccess.GetBoolean(),
+                                                ErrorMessage = qrElement.TryGetProperty("customerEmailError", out var custEmailError) ? custEmailError.GetString() : null,
+                                                EmailType = "Customer"
+                                            },
+                                            OrganizerEmailResult = new Services.EmailDeliveryResult
+                                            {
+                                                Success = qrElement.TryGetProperty("organizerEmailSuccess", out var orgEmailSuccess) && orgEmailSuccess.GetBoolean(),
+                                                ErrorMessage = qrElement.TryGetProperty("organizerEmailError", out var orgEmailError) ? orgEmailError.GetString() : null,
+                                                EmailType = "Organizer"
+                                            }
+                                        };
+                                        qrResults.Add(qrResult);
+                                    }
+                                }
+                                
+                                // Extract processing summary if available
+                                if (metadata.TryGetProperty("processingSummary", out var summaryElement))
+                                {
+                                    processingSummary = new Services.ProcessingSummary
+                                    {
+                                        TotalTickets = summaryElement.TryGetProperty("TotalTickets", out var total) ? total.GetInt32() : qrResults.Count,
+                                        SuccessfulQRGenerations = summaryElement.TryGetProperty("SuccessfulQRGenerations", out var successQR) ? successQR.GetInt32() : qrResults.Count(qr => qr.Success),
+                                        FailedQRGenerations = summaryElement.TryGetProperty("FailedQRGenerations", out var failedQR) ? failedQR.GetInt32() : qrResults.Count(qr => !qr.Success),
+                                        SuccessfulCustomerEmails = summaryElement.TryGetProperty("SuccessfulCustomerEmails", out var successCustomer) ? successCustomer.GetInt32() : qrResults.Count(qr => qr.CustomerEmailResult.Success),
+                                        FailedCustomerEmails = summaryElement.TryGetProperty("FailedCustomerEmails", out var failedCustomer) ? failedCustomer.GetInt32() : qrResults.Count(qr => !qr.CustomerEmailResult.Success),
+                                        SuccessfulOrganizerEmails = summaryElement.TryGetProperty("SuccessfulOrganizerEmails", out var successOrganizer) ? successOrganizer.GetInt32() : qrResults.Count(qr => qr.OrganizerEmailResult.Success),
+                                        FailedOrganizerEmails = summaryElement.TryGetProperty("FailedOrganizerEmails", out var failedOrganizer) ? failedOrganizer.GetInt32() : qrResults.Count(qr => !qr.OrganizerEmailResult.Success)
+                                    };
+                                }
+                            }
                         }
-                    });
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Error parsing booking metadata for detailed QR/email results");
+                            // Fallback to basic summary if metadata parsing fails
+                            processingSummary = new Services.ProcessingSummary
+                            {
+                                TotalTickets = 1,
+                                SuccessfulQRGenerations = 1,
+                                FailedQRGenerations = 0,
+                                SuccessfulCustomerEmails = 1,
+                                FailedCustomerEmails = 0,
+                                SuccessfulOrganizerEmails = 1,
+                                FailedOrganizerEmails = 0
+                            };
+                        }
+                        
+                        // Payment fully processed - return detailed result
+                        return Ok(new Services.WebhookPaymentStatusResponse
+                        {
+                            IsProcessed = true,
+                            ProcessedAt = existingBooking.CreatedAt,
+                            BookingDetails = new Services.BookingDetailsResponse
+                            {
+                                EventTitle = existingBooking.Event?.Title ?? "Unknown Event",
+                                CustomerName = $"{existingBooking.CustomerFirstName} {existingBooking.CustomerLastName}".Trim(),
+                                CustomerEmail = existingBooking.CustomerEmail,
+                                PaymentId = existingBooking.PaymentIntentId.Replace("pi_", ""),
+                                AmountTotal = existingBooking.TotalAmount,
+                                ProcessedAt = existingBooking.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                                TicketReference = existingBooking.PaymentIntentId.Replace("pi_", ""),
+                                BookingId = existingBooking.Id,
+                                QRTicketsGenerated = qrResults,
+                                ProcessingSummary = processingSummary
+                            }
+                        });
+                    }
+                    else if (existingBooking.Status == "Failed")
+                    {
+                        return Ok(new Services.WebhookPaymentStatusResponse
+                        {
+                            IsProcessed = false,
+                            ProcessedAt = existingBooking.CreatedAt,
+                            ErrorMessage = "Payment processing failed. Please contact support."
+                        });
+                    }
+                    else if (existingBooking.Status == "Processing")
+                    {
+                        // Still processing - continue polling
+                        return Ok(new Services.WebhookPaymentStatusResponse
+                        {
+                            IsProcessed = false,
+                            ProcessedAt = existingBooking.CreatedAt,
+                            BookingDetails = new Services.BookingDetailsResponse
+                            {
+                                EventTitle = existingBooking.Event?.Title ?? "Unknown Event",
+                                CustomerName = $"{existingBooking.CustomerFirstName} {existingBooking.CustomerLastName}".Trim(),
+                                CustomerEmail = existingBooking.CustomerEmail,
+                                PaymentId = existingBooking.PaymentIntentId.Replace("pi_", ""),
+                                AmountTotal = existingBooking.TotalAmount,
+                                ProcessedAt = "Still processing...",
+                                TicketReference = existingBooking.PaymentIntentId.Replace("pi_", "")
+                            }
+                        });
+                    }
                 }
 
                 // If not in database, check Stripe (but only if necessary)
@@ -600,37 +862,9 @@ namespace EventBooking.API.Controllers
             }
         }
 
-        [HttpGet("debug-session/{sessionId}")]
-        [AllowAnonymous]
-        public async Task<ActionResult> DebugSession(string sessionId)
-        {
-            try
-            {
-                var service = new SessionService();
-                var session = await service.GetAsync(sessionId);
-
-                var debugInfo = new
-                {
-                    SessionId = sessionId,
-                    Status = session.Status,
-                    PaymentStatus = session.PaymentStatus,
-                    CustomerEmail = session.CustomerEmail,
-                    AmountTotal = session.AmountTotal,
-                    Metadata = session.Metadata?.ToDictionary(kvp => kvp.Key, kvp => kvp.Value) ?? new Dictionary<string, string>(),
-                    SelectedSeatsFromMetadata = session.Metadata?.GetValueOrDefault("selectedSeats", "NOT_FOUND"),
-                    EventIdFromMetadata = session.Metadata?.GetValueOrDefault("eventId", "NOT_FOUND")
-                };
-
-                _logger.LogInformation("Debug session {SessionId}: {@DebugInfo}", sessionId, debugInfo);
-                
-                return Ok(debugInfo);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error debugging session {SessionId}: {Message}", sessionId, ex.Message);
-                return StatusCode(500, $"Error debugging session: {ex.Message}");
-            }
-        }
+        // REMOVED: Debug session endpoint - Security risk in production
+        // [HttpGet("debug-session/{sessionId}")]
+        // This endpoint exposed sensitive payment session data and should not be available in production
 
         // GET: Payment/processing-fee/{eventId}?amount={amount}
         [HttpGet("processing-fee/{eventId}")]

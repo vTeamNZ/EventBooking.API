@@ -201,8 +201,8 @@ namespace EventBooking.API.Controllers
                     Capacity = dto.Capacity,
                     OrganizerId = organizer.Id,
                     ImageUrl = imageUrl,
-                    // Use venue's supported seat selection mode if available, otherwise use DTO value
-                    SeatSelectionMode = venue?.SeatSelectionMode ?? dto.SeatSelectionMode,
+                    // Use DTO's seat selection mode directly
+                    SeatSelectionMode = dto.SeatSelectionMode,
                     StagePosition = dto.StagePosition,
                     VenueId = dto.VenueId,
                     IsActive = false, // Keep for backward compatibility
@@ -218,14 +218,6 @@ namespace EventBooking.API.Controllers
                 // Log the event data to debug
                 logger.LogInformation("Event created with SeatSelectionMode: {SeatSelectionMode} (value: {ModeValue}), VenueId: {VenueId}", 
                     newEvent.SeatSelectionMode, (int)newEvent.SeatSelectionMode, newEvent.VenueId);
-                
-                // Force EventHall mode if we have a venue with allocated seating
-                if (newEvent.VenueId.HasValue && dto.SeatSelectionMode.ToString() == "1")
-                {
-                    newEvent.SeatSelectionMode = SeatSelectionMode.EventHall;
-                    await _context.SaveChangesAsync();
-                    logger.LogInformation("Forced SeatSelectionMode to EventHall");
-                }
                 
                 if (newEvent.VenueId.HasValue && newEvent.SeatSelectionMode == SeatSelectionMode.EventHall)
                 {
@@ -292,7 +284,6 @@ namespace EventBooking.API.Controllers
                 .OrderByDescending(e => e.Date)
                 .ToListAsync();
 
-            logger.LogInformation("GetOrganizerEvents: Found {Count} events for organizer {OrganizerId}", events.Count, organizer.Id);
             return events;
         }
 
@@ -363,112 +354,7 @@ namespace EventBooking.API.Controllers
             return NoContent();
         }
 
-        // POST: api/Events/seed-test-data
-        /*[AllowAnonymous]
-        [HttpPost("seed-test-data")]
-        public async Task<IActionResult> SeedTestData()
-        {
-            try
-            {
-                // Create event if it doesn't exist
-                var eventExists = await _context.Events.AnyAsync(e => e.Id == 1);
-                if (!eventExists)
-                {
-                    var newEvent = new Event
-                    {
-                        Title = "Sri Lankan Cultural Night 2025",
-                        Description = "A night of traditional Sri Lankan music, dance, and cuisine",
-                        Date = new DateTime(2025, 7, 20, 18, 0, 0),
-                        Location = "Auckland Town Hall",
-                        IsActive = true,
-                        OrganizerId = 1,
-                        ImageUrl = "events/1.jpg",
-                        Capacity = 200
-                    };
-                    _context.Events.Add(newEvent);
-                    await _context.SaveChangesAsync();
-                }
-
-                // Add ticket types
-                var ticketTypes = new[]
-                {
-                    new TicketType 
-                    { 
-                        EventId = 1, 
-                        Type = "Regular", 
-                        Price = 50.00m, 
-                        Description = "Regular entry ticket" 
-                    },
-                    new TicketType 
-                    { 
-                        EventId = 1, 
-                        Type = "VIP", 
-                        Price = 100.00m, 
-                        Description = "VIP ticket with special benefits including priority seating" 
-                    },
-                    new TicketType 
-                    { 
-                        EventId = 1, 
-                        Type = "Student", 
-                        Price = 35.00m, 
-                        Description = "Student discount ticket (valid student ID required)" 
-                    }
-                };
-
-                foreach (var ticketType in ticketTypes)
-                {
-                    if (!await _context.TicketTypes.AnyAsync(t => 
-                        t.EventId == ticketType.EventId && 
-                        t.Type == ticketType.Type))
-                    {
-                        _context.TicketTypes.Add(ticketType);
-                    }
-                }
-
-                // Add food items
-                var foodItems = new[]
-                {
-                    new FoodItem 
-                    { 
-                        EventId = 1, 
-                        Name = "Sri Lankan Rice & Curry", 
-                        Price = 18.00m, 
-                        Description = "Traditional Sri Lankan rice with 3 vegetables, dhal curry, and papadam" 
-                    },
-                    new FoodItem 
-                    { 
-                        EventId = 1, 
-                        Name = "Kottu Roti", 
-                        Price = 20.00m, 
-                        Description = "Famous Sri Lankan street food made with chopped roti, vegetables, and your choice of chicken or vegetarian" 
-                    },
-                    new FoodItem 
-                    { 
-                        EventId = 1, 
-                        Name = "String Hoppers Meal", 
-                        Price = 15.00m, 
-                        Description = "String hoppers served with dhal curry and coconut sambol" 
-                    }
-                };
-
-                foreach (var foodItem in foodItems)
-                {
-                    if (!await _context.FoodItems.AnyAsync(f => 
-                        f.EventId == foodItem.EventId && 
-                        f.Name == foodItem.Name))
-                    {
-                        _context.FoodItems.Add(foodItem);
-                    }
-                }
-
-                await _context.SaveChangesAsync();
-                return Ok("Test data seeded successfully!");
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Error seeding test data: {ex.Message}");
-            }
-        }*/
+        // REMOVED: Commented out seed endpoint - Development artifacts removed for production security
         
         // PUT: api/Events/{id}/submit-for-review
         [Authorize(Roles = "Organizer")]

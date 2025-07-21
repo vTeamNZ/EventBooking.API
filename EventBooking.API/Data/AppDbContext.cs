@@ -25,8 +25,9 @@ namespace EventBooking.API.Data
         public DbSet<FoodItem> FoodItems { get; set; }
         public DbSet<Booking> Bookings { get; set; }
         public DbSet<BookingLineItem> BookingLineItems { get; set; }
-        public DbSet<SeatReservation> SeatReservations { get; set; }
+        public DbSet<SeatReservation> SeatReservations { get; set; } // ✅ Industry-standard reservation tracking
         public DbSet<Venue> Venues { get; set; }
+        public DbSet<EventBookingRecord> EventBookings { get; set; } // ✅ Direct ticket booking for organizers
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -212,20 +213,32 @@ namespace EventBooking.API.Data
                 .Property(t => t.TablePrice)
                 .HasPrecision(18, 2);
 
-            // Configure SeatReservation
+            // ✅ Configure SeatReservation entity for industry-standard reservation tracking
             modelBuilder.Entity<SeatReservation>()
                 .HasOne(sr => sr.Event)
                 .WithMany()
                 .HasForeignKey(sr => sr.EventId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            // Configure relationship with Seat
             modelBuilder.Entity<SeatReservation>()
-                .HasIndex(sr => new { sr.EventId, sr.Row, sr.Number })
-                .IsUnique();
+                .HasOne(sr => sr.Seat)
+                .WithMany()
+                .HasForeignKey(sr => sr.SeatId)
+                .OnDelete(DeleteBehavior.Restrict);
 
-            // Add composite index for looking up active reservations
+            // Add indexes for performance
             modelBuilder.Entity<SeatReservation>()
-                .HasIndex(sr => new { sr.EventId, sr.IsConfirmed, sr.ExpiresAt });
+                .HasIndex(sr => new { sr.EventId, sr.SessionId });
+
+            modelBuilder.Entity<SeatReservation>()
+                .HasIndex(sr => new { sr.ExpiresAt, sr.IsConfirmed });
+
+            modelBuilder.Entity<SeatReservation>()
+                .HasIndex(sr => new { sr.ReservationId });
+
+            modelBuilder.Entity<SeatReservation>()
+                .HasIndex(sr => new { sr.SeatId });
 
             // Optional: Ensure delete behaviors and FK relationship
             modelBuilder.Entity<Organizer>()

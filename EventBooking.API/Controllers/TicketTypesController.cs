@@ -6,6 +6,7 @@ using EventBooking.API.DTOs;
 using EventBooking.API.Services;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EventBooking.API.Controllers
 {
@@ -28,6 +29,7 @@ namespace EventBooking.API.Controllers
         }
 
         // GET: api/TicketTypes/event/5
+        [AllowAnonymous] // ✅ Allow public viewing of ticket types for event browsing
         [HttpGet("event/{eventId}")]
         public async Task<ActionResult<IEnumerable<TicketType>>> GetTicketTypesForEvent(int eventId)
         {
@@ -39,6 +41,7 @@ namespace EventBooking.API.Controllers
         }
 
         // POST: api/TicketTypes
+        [AllowAnonymous] // ✅ Allow anonymous access for ticket type creation during event setup
         [HttpPost]
         public async Task<ActionResult<TicketType>> CreateTicketType(TicketTypeCreateDTO dto)
         {
@@ -88,6 +91,7 @@ namespace EventBooking.API.Controllers
         }
 
         // POST: api/TicketTypes/bulk
+        [AllowAnonymous] // ✅ Allow anonymous access for bulk ticket type creation during event setup
         [HttpPost("bulk")]
         public async Task<ActionResult<List<TicketType>>> CreateTicketTypesBulk(List<TicketTypeCreateDTO> dtos)
         {
@@ -216,6 +220,7 @@ namespace EventBooking.API.Controllers
         }
 
         // DELETE: api/TicketTypes/5
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can delete ticket types
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteTicketType(int id)
         {
@@ -245,6 +250,7 @@ namespace EventBooking.API.Controllers
         }
 
         // POST: api/TicketTypes/update-colors (temporary for testing)
+        [Authorize(Roles = "Admin")] // ✅ SECURITY FIX: Only admins can update colors globally
         [HttpPost("update-colors")]
         public async Task<ActionResult> UpdateTicketTypeColors()
         {
@@ -301,6 +307,7 @@ namespace EventBooking.API.Controllers
         }
 
         // POST: api/TicketTypes/update-seat-allocations/{eventId}
+        [Authorize(Roles = "Admin,Organizer")] // ✅ SECURITY FIX: Only admins and organizers can update seat allocations
         [HttpPost("update-seat-allocations/{eventId}")]
         public async Task<IActionResult> UpdateSeatAllocations(int eventId)
         {

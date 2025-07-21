@@ -169,32 +169,6 @@ namespace EventBooking.API.Migrations
                     b.ToTable("Bookings");
                 });
 
-            modelBuilder.Entity("EventBooking.API.Models.BookingFood", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("BookingId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("FoodItemId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Quantity")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BookingId");
-
-                    b.HasIndex("FoodItemId");
-
-                    b.ToTable("BookingFoods");
-                });
-
             modelBuilder.Entity("EventBooking.API.Models.BookingLineItem", b =>
                 {
                     b.Property<int>("Id")
@@ -262,104 +236,6 @@ namespace EventBooking.API.Migrations
                         .HasDatabaseName("IX_BookingLineItems_ItemType_ItemId");
 
                     b.ToTable("BookingLineItems");
-                });
-
-            modelBuilder.Entity("EventBooking.API.Models.BookingTicket", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int>("BookingId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Quantity")
-                        .HasColumnType("int");
-
-                    b.Property<int>("TicketTypeId")
-                        .HasColumnType("int");
-
-                    b.Property<int?>("TicketTypeId1")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BookingId");
-
-                    b.HasIndex("TicketTypeId");
-
-                    b.HasIndex("TicketTypeId1");
-
-                    b.ToTable("BookingTickets");
-                });
-
-            modelBuilder.Entity("EventBooking.API.Models.ETicketBooking", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<int?>("BookingId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("BuyerEmail")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("nvarchar(255)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("datetime2")
-                        .HasDefaultValueSql("GETUTCDATE()");
-
-                    b.Property<string>("EventID")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("EventName")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("nvarchar(255)");
-
-                    b.Property<string>("FirstName")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<string>("OrganizerEmail")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("nvarchar(255)");
-
-                    b.Property<string>("PaymentGUID")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("nvarchar(255)");
-
-                    b.Property<string>("SeatNo")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<string>("TicketPath")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("BookingId");
-
-                    b.HasIndex("PaymentGUID", "SeatNo")
-                        .IsUnique()
-                        .HasDatabaseName("IX_ETicketBookings_PaymentGUID_SeatNo");
-
-                    b.ToTable("EventBookings");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Event", b =>
@@ -431,6 +307,54 @@ namespace EventBooking.API.Migrations
                     b.HasIndex("VenueId");
 
                     b.ToTable("Events");
+                });
+
+            modelBuilder.Entity("EventBooking.API.Models.EventBookingRecord", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("BuyerEmail")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("EventID")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("EventName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("FirstName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("OrganizerEmail")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PaymentGUID")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("SeatNo")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("TicketPath")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("EventBookings");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.FoodItem", b =>
@@ -782,25 +706,34 @@ namespace EventBooking.API.Migrations
                     b.Property<int>("Number")
                         .HasColumnType("int");
 
+                    b.Property<string>("ReservationId")
+                        .HasColumnType("nvarchar(450)");
+
                     b.Property<DateTime>("ReservedAt")
                         .HasColumnType("datetime2");
 
                     b.Property<int>("Row")
                         .HasColumnType("int");
 
+                    b.Property<int?>("SeatId")
+                        .HasColumnType("int");
+
                     b.Property<string>("SessionId")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasColumnType("nvarchar(450)");
 
                     b.Property<string>("UserId")
                         .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EventId", "IsConfirmed", "ExpiresAt");
+                    b.HasIndex("ReservationId");
 
-                    b.HasIndex("EventId", "Row", "Number")
-                        .IsUnique();
+                    b.HasIndex("SeatId");
+
+                    b.HasIndex("EventId", "SessionId");
+
+                    b.HasIndex("ExpiresAt", "IsConfirmed");
 
                     b.ToTable("SeatReservations");
                 });
@@ -1169,25 +1102,6 @@ namespace EventBooking.API.Migrations
                     b.Navigation("Event");
                 });
 
-            modelBuilder.Entity("EventBooking.API.Models.BookingFood", b =>
-                {
-                    b.HasOne("EventBooking.API.Models.Booking", "Booking")
-                        .WithMany("BookingFoods")
-                        .HasForeignKey("BookingId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("EventBooking.API.Models.FoodItem", "FoodItem")
-                        .WithMany()
-                        .HasForeignKey("FoodItemId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.Navigation("Booking");
-
-                    b.Navigation("FoodItem");
-                });
-
             modelBuilder.Entity("EventBooking.API.Models.BookingLineItem", b =>
                 {
                     b.HasOne("EventBooking.API.Models.Booking", "Booking")
@@ -1195,39 +1109,6 @@ namespace EventBooking.API.Migrations
                         .HasForeignKey("BookingId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("Booking");
-                });
-
-            modelBuilder.Entity("EventBooking.API.Models.BookingTicket", b =>
-                {
-                    b.HasOne("EventBooking.API.Models.Booking", "Booking")
-                        .WithMany("BookingTickets")
-                        .HasForeignKey("BookingId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("EventBooking.API.Models.TicketType", "TicketType")
-                        .WithMany()
-                        .HasForeignKey("TicketTypeId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("EventBooking.API.Models.TicketType", null)
-                        .WithMany("BookingTickets")
-                        .HasForeignKey("TicketTypeId1");
-
-                    b.Navigation("Booking");
-
-                    b.Navigation("TicketType");
-                });
-
-            modelBuilder.Entity("EventBooking.API.Models.ETicketBooking", b =>
-                {
-                    b.HasOne("EventBooking.API.Models.Booking", "Booking")
-                        .WithMany()
-                        .HasForeignKey("BookingId")
-                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("Booking");
                 });
@@ -1334,7 +1215,14 @@ namespace EventBooking.API.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("EventBooking.API.Models.Seat", "Seat")
+                        .WithMany()
+                        .HasForeignKey("SeatId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("Event");
+
+                    b.Navigation("Seat");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Table", b =>
@@ -1437,11 +1325,7 @@ namespace EventBooking.API.Migrations
 
             modelBuilder.Entity("EventBooking.API.Models.Booking", b =>
                 {
-                    b.Navigation("BookingFoods");
-
                     b.Navigation("BookingLineItems");
-
-                    b.Navigation("BookingTickets");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Event", b =>
@@ -1469,8 +1353,6 @@ namespace EventBooking.API.Migrations
 
             modelBuilder.Entity("EventBooking.API.Models.TicketType", b =>
                 {
-                    b.Navigation("BookingTickets");
-
                     b.Navigation("Seats");
                 });
 
