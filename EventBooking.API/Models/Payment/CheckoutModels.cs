@@ -61,7 +61,7 @@ namespace EventBooking.API.Models.Payment
         public int Quantity { get; set; }
 
         [Required]
-        [Range(0.01, double.MaxValue)]
+        [Range(0.00, double.MaxValue)] // Allow $0 for free items
         public decimal UnitPrice { get; set; }
         
         // Seat/ticket association fields for individual food selection
