@@ -42,5 +42,7 @@ namespace EventBooking.API.Services
         public string? BookingId { get; set; }
         public string? ErrorMessage { get; set; }
         public bool IsDuplicate { get; set; }
+        public byte[]? QRCodeImage { get; set; }
+        public string? EventImageUrl { get; set; }
     }
 }
