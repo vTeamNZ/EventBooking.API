@@ -45,6 +45,29 @@ namespace EventBooking.API.Controllers
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
         }
 
+        [HttpGet("debug-session/{sessionId}")]
+        [AllowAnonymous]
+        public async Task<IActionResult> DebugSession(string sessionId)
+        {
+            try
+            {
+                var sessionService = new Stripe.Checkout.SessionService();
+                var session = await sessionService.GetAsync(sessionId);
+                
+                return Ok(new {
+                    SessionId = session.Id,
+                    PaymentStatus = session.PaymentStatus,
+                    Metadata = session.Metadata,
+                    FoodDetails = session.Metadata.TryGetValue("foodDetails", out var foodDetails) ? foodDetails : "Not found",
+                    TicketDetails = session.Metadata.TryGetValue("ticketDetails", out var ticketDetails) ? ticketDetails : "Not found"
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error getting session: {ex.Message}");
+            }
+        }
+
         [HttpGet("config")]
         [AllowAnonymous]
         public IActionResult GetConfig()
@@ -496,38 +519,51 @@ namespace EventBooking.API.Controllers
                         processingFeeCalculation.ProcessingFeeAmount);
                 }
 
-                // Smart truncation for food details to handle Stripe's 500-character metadata limit
+                // 🔧 FIXED: Store food details properly without truncation for webhook processing
                 string foodDetailsForMetadata = "";
-                if (request.FoodDetails != null)
+                if (request.FoodDetails != null && request.FoodDetails.Any())
                 {
-                    var fullFoodDetails = System.Text.Json.JsonSerializer.Serialize(request.FoodDetails);
-                    if (fullFoodDetails.Length > 500)
+                    // Create properly formatted JSON that webhook can process
+                    var foodDetailsJson = System.Text.Json.JsonSerializer.Serialize(request.FoodDetails.Select(f => new Dictionary<string, object>
                     {
-                        try
-                        {
-                            // Create condensed version with just name and quantity
-                            var condensedItems = request.FoodDetails.Take(3).Select(f => new { 
-                                Name = f.Name?.Length > 15 ? f.Name.Substring(0, 15) : f.Name,
-                                Qty = f.Quantity 
-                            });
-                            var condensed = System.Text.Json.JsonSerializer.Serialize(condensedItems);
-                            if (request.FoodDetails.Count > 3)
-                            {
-                                condensed = condensed.TrimEnd(']') + $",...+{request.FoodDetails.Count - 3} more]";
-                            }
-                            foodDetailsForMetadata = condensed.Length <= 500 ? condensed : $"FoodOrders:{request.FoodDetails.Count}";
-                        }
-                        catch
-                        {
-                            foodDetailsForMetadata = $"FoodItems:{request.FoodDetails.Count}";
-                        }
-                        
-                        _logger.LogInformation("Truncated food details from {OriginalLength} to {NewLength} characters", 
-                            fullFoodDetails.Length, foodDetailsForMetadata.Length);
+                        ["Name"] = f.Name,
+                        ["Quantity"] = f.Quantity,
+                        ["UnitPrice"] = f.UnitPrice,
+                        ["SeatTicketId"] = f.SeatTicketId ?? "", // 🎯 CRITICAL: Include seat assignment
+                        ["SeatTicketType"] = f.SeatTicketType ?? "" // 🎯 CRITICAL: Include ticket type
+                    }).ToList());
+                    
+                    // If it's too long for Stripe metadata (500 char limit), store essential data
+                    if (foodDetailsJson.Length <= 500)
+                    {
+                        foodDetailsForMetadata = foodDetailsJson;
                     }
-                    else
+                    else 
                     {
-                        foodDetailsForMetadata = fullFoodDetails;
+                        // For long food details, store just the count and let webhook get details from line items
+                        foodDetailsForMetadata = $"{{\"count\":{request.FoodDetails.Count},\"extractFromLineItems\":true}}";
+                    }
+                    
+                    _logger.LogInformation("Storing food details in metadata: {FoodDetails} (Length: {Length})", 
+                        foodDetailsForMetadata, foodDetailsForMetadata.Length);
+                }
+
+                // 🔧 FIX: Ensure success URL uses correct base URL from configuration
+                var successUrl = request.SuccessUrl;
+                var baseUrl = _configuration["ApplicationSettings:BaseUrl"];
+                
+                // If we have a baseUrl configured and the successUrl doesn't match the baseUrl domain/path
+                if (!string.IsNullOrEmpty(baseUrl))
+                {
+                    var requestUri = new Uri(successUrl);
+                    var configUri = new Uri(baseUrl);
+                    
+                    // Check if the request URL doesn't start with the configured base URL
+                    if (!successUrl.StartsWith(baseUrl, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Replace the domain/path with the configured base URL
+                        successUrl = $"{baseUrl.TrimEnd('/')}{requestUri.AbsolutePath}{requestUri.Query}";
+                        _logger.LogInformation("🔧 Corrected success URL from {OriginalUrl} to {CorrectedUrl}", request.SuccessUrl, successUrl);
                     }
                 }
 
@@ -536,7 +572,7 @@ namespace EventBooking.API.Controllers
                     // Remove PaymentMethodTypes to let Stripe automatically select based on Dashboard settings
                     LineItems = lineItems,
                     Mode = "payment",
-                    SuccessUrl = $"{request.SuccessUrl}?session_id={{CHECKOUT_SESSION_ID}}",
+                    SuccessUrl = $"{successUrl}?session_id={{CHECKOUT_SESSION_ID}}",
                     CancelUrl = request.CancelUrl,
                     CustomerEmail = request.Email,
                     PaymentIntentData = new SessionPaymentIntentDataOptions
