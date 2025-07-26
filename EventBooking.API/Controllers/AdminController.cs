@@ -1,10 +1,13 @@
 using EventBooking.API.Data;
 using EventBooking.API.DTOs;
 using EventBooking.API.Models;
+using EventBooking.API.Models.Payment;
+using EventBooking.API.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using System.Security.Claims;
 
 namespace EventBooking.API.Controllers
@@ -18,17 +21,23 @@ namespace EventBooking.API.Controllers
         private readonly ILogger<AdminController> _logger;
         private readonly UserManager<ApplicationUser> _userManager;
         private readonly RoleManager<IdentityRole> _roleManager;
+        private readonly IAfterPayFeeService _afterPayFeeService;
+        private readonly IOptionsMonitor<AfterPayFeeSettings> _afterPayOptions;
 
         public AdminController(
             AppDbContext context, 
             ILogger<AdminController> logger,
             UserManager<ApplicationUser> userManager,
-            RoleManager<IdentityRole> roleManager)
+            RoleManager<IdentityRole> roleManager,
+            IAfterPayFeeService afterPayFeeService,
+            IOptionsMonitor<AfterPayFeeSettings> afterPayOptions)
         {
             _context = context;
             _logger = logger;
             _userManager = userManager ?? throw new ArgumentNullException(nameof(userManager));
             _roleManager = roleManager ?? throw new ArgumentNullException(nameof(roleManager));
+            _afterPayFeeService = afterPayFeeService ?? throw new ArgumentNullException(nameof(afterPayFeeService));
+            _afterPayOptions = afterPayOptions ?? throw new ArgumentNullException(nameof(afterPayOptions));
         }
 
         // GET: api/Admin/dashboard-stats
@@ -523,10 +532,71 @@ namespace EventBooking.API.Controllers
                 return StatusCode(500, new { message = "An error occurred while resetting password" });
             }
         }
+
+        // GET: api/Admin/afterpay-settings
+        [HttpGet("afterpay-settings")]
+        [AllowAnonymous] // Allow public access for payment page configuration
+        public async Task<IActionResult> GetAfterPaySettings()
+        {
+            try
+            {
+                var settings = _afterPayFeeService.GetAfterPaySettings();
+                
+                return Ok(new
+                {
+                    enabled = settings.Enabled,
+                    percentage = settings.Percentage,
+                    fixedAmount = settings.FixedAmount,
+                    currency = settings.Currency,
+                    description = settings.Description,
+                    currentConfigSource = "appsettings.json"
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving AfterPay settings");
+                return StatusCode(500, "Error retrieving AfterPay settings");
+            }
+        }
+
+        // POST: api/Admin/calculate-afterpay-fee
+        [HttpPost("calculate-afterpay-fee")]
+        public async Task<IActionResult> CalculateAfterPayFee([FromBody] CalculateAfterPayFeeRequest request)
+        {
+            try
+            {
+                if (request.Amount <= 0)
+                {
+                    return BadRequest("Amount must be greater than 0");
+                }
+
+                var calculation = _afterPayFeeService.CalculateTotalWithAfterPayFee(request.Amount);
+                
+                return Ok(new
+                {
+                    orderAmount = calculation.OrderAmount,
+                    afterPayFeeAmount = calculation.AfterPayFeeAmount,
+                    totalAmount = calculation.TotalAmount,
+                    afterPayFeeApplied = calculation.AfterPayFeeApplied,
+                    description = calculation.AfterPayFeeDescription,
+                    settings = _afterPayFeeService.GetAfterPaySettings()
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error calculating AfterPay fee for amount {Amount}", request.Amount);
+                return StatusCode(500, "Error calculating AfterPay fee");
+            }
+        }
     }
 
     public class VerifyOrganizerRequest
     {
         public string? Notes { get; set; }
+    }
+
+    public class CalculateAfterPayFeeRequest
+    {
+        public decimal Amount { get; set; }
     }
 }

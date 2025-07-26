@@ -25,6 +25,7 @@ namespace EventBooking.API.Controllers
         private readonly IBookingConfirmationService _bookingConfirmationService;
         private readonly IProcessingFeeService _processingFeeService;
         private readonly ITicketAvailabilityService _ticketAvailabilityService;
+        private readonly IAfterPayFeeService _afterPayFeeService;
         
         public PaymentController(
             IConfiguration configuration,
@@ -33,7 +34,8 @@ namespace EventBooking.API.Controllers
             IEventStatusService eventStatusService,
             IBookingConfirmationService bookingConfirmationService,
             IProcessingFeeService processingFeeService,
-            ITicketAvailabilityService ticketAvailabilityService)
+            ITicketAvailabilityService ticketAvailabilityService,
+            IAfterPayFeeService afterPayFeeService)
         {
             _configuration = configuration;
             _logger = logger;
@@ -42,6 +44,7 @@ namespace EventBooking.API.Controllers
             _bookingConfirmationService = bookingConfirmationService;
             _processingFeeService = processingFeeService;
             _ticketAvailabilityService = ticketAvailabilityService;
+            _afterPayFeeService = afterPayFeeService;
             StripeConfiguration.ApiKey = _configuration["Stripe:SecretKey"];
         }
 
@@ -519,6 +522,39 @@ namespace EventBooking.API.Controllers
                         processingFeeCalculation.ProcessingFeeAmount);
                 }
 
+                // Calculate total amount including processing fees for AfterPay calculation
+                var totalAmountForAfterPay = processingFeeCalculation.TotalAmount;
+
+                // Calculate and add AfterPay fee if enabled and requested
+                decimal afterPayFeeAmount = 0;
+                if (request.UseAfterPay)
+                {
+                    var afterPayFeeCalculation = _afterPayFeeService.CalculateTotalWithAfterPayFee(totalAmountForAfterPay);
+                    
+                    if (afterPayFeeCalculation.AfterPayFeeApplied && afterPayFeeCalculation.AfterPayFeeAmount > 0)
+                    {
+                        afterPayFeeAmount = afterPayFeeCalculation.AfterPayFeeAmount;
+                        
+                        lineItems.Add(new SessionLineItemOptions
+                        {
+                            PriceData = new SessionLineItemPriceDataOptions
+                            {
+                                UnitAmount = (long)(afterPayFeeAmount * 100), // Convert to cents
+                                Currency = "nzd",
+                                ProductData = new SessionLineItemPriceDataProductDataOptions
+                                {
+                                    Name = "AfterPay Fee",
+                                    Description = $"AfterPay processing fee for {request.EventTitle}",
+                                }
+                            },
+                            Quantity = 1,
+                        });
+                        
+                        _logger.LogInformation("Added AfterPay fee of ${AfterPayFee} to checkout session", 
+                            afterPayFeeAmount);
+                    }
+                }
+
                 // 🔧 FIXED: Store food details properly without truncation for webhook processing
                 string foodDetailsForMetadata = "";
                 if (request.FoodDetails != null && request.FoodDetails.Any())
@@ -569,7 +605,10 @@ namespace EventBooking.API.Controllers
 
                 var options = new SessionCreateOptions
                 {
-                    // Remove PaymentMethodTypes to let Stripe automatically select based on Dashboard settings
+                    // Conditionally include AfterPay based on user selection
+                    PaymentMethodTypes = request.UseAfterPay 
+                        ? new List<string> { "card", "afterpay_clearpay" }
+                        : new List<string> { "card" },
                     LineItems = lineItems,
                     Mode = "payment",
                     SuccessUrl = $"{successUrl}?session_id={{CHECKOUT_SESSION_ID}}",
@@ -588,6 +627,7 @@ namespace EventBooking.API.Controllers
                         { "customerFirstName", request.FirstName ?? "" },
                         { "customerLastName", request.LastName ?? "" },
                         { "customerMobile", request.Mobile ?? "" },
+                        { "useAfterPay", request.UseAfterPay.ToString() },
                         { "selectedSeats", request.SelectedSeats != null && request.SelectedSeats.Any() ? 
                             string.Join(";", request.SelectedSeats) : 
                             "" }

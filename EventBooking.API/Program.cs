@@ -1,6 +1,7 @@
 using EventBooking.API;
 using EventBooking.API.Data;
 using EventBooking.API.Models;
+using EventBooking.API.Models.Payment;
 using EventBooking.API.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
@@ -144,6 +145,10 @@ builder.Services.AddScoped<ITicketAvailabilityService, TicketAvailabilityService
 
 // Add Processing Fee Service
 builder.Services.AddScoped<IProcessingFeeService, ProcessingFeeService>();
+
+// Add AfterPay Fee Configuration and Service
+builder.Services.Configure<AfterPayFeeSettings>(builder.Configuration.GetSection("AfterPayFee"));
+builder.Services.AddScoped<IAfterPayFeeService, AfterPayFeeService>();
 
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options => 
