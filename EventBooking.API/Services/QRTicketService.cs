@@ -45,30 +45,9 @@ namespace EventBooking.API.Services
 
             try
             {
-                // 🎯 NEW ARCHITECTURE - Check for existing ticket in BookingLineItems table
-                var existingTicketLineItem = await _context.BookingLineItems
-                    .Include(bli => bli.Booking)
-                    .FirstOrDefaultAsync(bli => 
-                        bli.BookingId == request.BookingId && 
-                        bli.ItemType == "Ticket" && 
-                        !string.IsNullOrEmpty(bli.QRCode));
-
-                if (existingTicketLineItem != null)
-                {
-                    _logger.LogWarning("🎯 NEW ARCHITECTURE - Duplicate QR ticket generation attempt detected for BookingId: {BookingId}, Seat: {SeatNo}. Returning existing QR code: {QRCode}",
-                        request.BookingId, request.SeatNumber, existingTicketLineItem.QRCode);
-                    
-                    // Try to find the existing ticket file path
-                    var existingTicketPath = FindExistingTicketPath(request.EventId, request.EventName, request.FirstName, request.PaymentGuid);
-                    
-                    return new QRTicketResult
-                    { 
-                        Success = true,
-                        TicketPath = existingTicketPath ?? "",
-                        BookingId = existingTicketLineItem.QRCode,
-                        IsDuplicate = true
-                    };
-                }
+                // 🎯 SIMPLIFIED - No duplicate checking, generate fresh ticket for each request
+                _logger.LogInformation("🎯 SIMPLIFIED APPROACH - Generating fresh QR ticket for BookingId: {BookingId}, Seat/Ticket: {SeatNo}", 
+                    request.BookingId, request.SeatNumber);
 
                 // Generate QR Code
                 _logger.LogInformation("Generating QR Code for ticket");
@@ -89,7 +68,9 @@ namespace EventBooking.API.Services
                     request.FirstName,
                     qrCodeImage,
                     request.FoodOrders, // ✅ Pass food orders to PDF generation
-                    request.EventImageUrl); // ✅ Pass event flyer URL
+                    request.EventImageUrl, // ✅ Pass event flyer URL
+                    request.TicketType, // ✅ Pass ticket type
+                    request.BookingReference); // ✅ Pass booking reference
                 _logger.LogInformation("🎵 Professional concert ticket PDF generated successfully");
 
                 // Save ticket locally
@@ -99,18 +80,41 @@ namespace EventBooking.API.Services
                     request.EventId,
                     request.EventName,
                     request.FirstName,
-                    request.PaymentGuid);
+                    request.PaymentGuid,
+                    request.SeatNumber); // 🎯 CRITICAL FIX: Include seat number to prevent filename collisions
                 _logger.LogInformation("Ticket saved locally at: {LocalPath}", localTicketPath);
                 
                 // 🎯 NEW ARCHITECTURE - Update BookingLineItem with QR code information
-                _logger.LogInformation("🎯 NEW ARCHITECTURE - Updating BookingLineItem with QR code for BookingId: {BookingId}", request.BookingId);
+                _logger.LogInformation("🎯 NEW ARCHITECTURE - Updating BookingLineItem with QR code for BookingId: {BookingId}, Seat: {SeatNumber}", request.BookingId, request.SeatNumber);
                 
-                // Find the appropriate BookingLineItem for this ticket
-                var ticketLineItem = await _context.BookingLineItems
-                    .FirstOrDefaultAsync(bli => 
-                        bli.BookingId == request.BookingId && 
-                        bli.ItemType == "Ticket" && 
-                        (string.IsNullOrEmpty(bli.QRCode) || bli.QRCode == ""));
+                // 🎯 CRITICAL FIX: Find the SPECIFIC BookingLineItem for this seat/ticket
+                BookingLineItem? ticketLineItem = null;
+                
+                // For allocated seating, match by seat details
+                if (request.SeatNumber.Length <= 3 && char.IsLetter(request.SeatNumber[0])) // Format like "F9", "G10"
+                {
+                    ticketLineItem = await _context.BookingLineItems
+                        .FirstOrDefaultAsync(bli => 
+                            bli.BookingId == request.BookingId && 
+                            bli.ItemType == "Ticket" && 
+                            bli.SeatDetails.Contains(request.SeatNumber));
+                    
+                    _logger.LogInformation("🎯 ALLOCATED SEATING - Looking for seat {SeatNumber} in BookingLineItems", request.SeatNumber);
+                }
+                else // For general admission, match by ticket type
+                {
+                    // Extract ticket type from SeatNumber (e.g., "Standard01-1" -> "Standard01")
+                    var ticketType = request.SeatNumber.Contains("-") ? request.SeatNumber.Split('-')[0] : request.SeatNumber;
+                    
+                    ticketLineItem = await _context.BookingLineItems
+                        .FirstOrDefaultAsync(bli => 
+                            bli.BookingId == request.BookingId && 
+                            bli.ItemType == "Ticket" && 
+                            bli.ItemName == ticketType &&
+                            (string.IsNullOrEmpty(bli.QRCode) || bli.QRCode == ""));
+                    
+                    _logger.LogInformation("🎯 GENERAL ADMISSION - Looking for ticket type {TicketType} in BookingLineItems", ticketType);
+                }
 
                 if (ticketLineItem != null)
                 {
@@ -185,40 +189,10 @@ namespace EventBooking.API.Services
                 return new QRTicketResult
                 {
                     Success = false,
-                    ErrorMessage = ex.Message
+                    ErrorMessage = ex.Message,
+                    QRCodeImage = null, // No QR code in error case
+                    EventImageUrl = request.EventImageUrl // Still include event image URL if available
                 };
-            }
-        }
-
-        /// <summary>
-        /// 🎯 NEW ARCHITECTURE - Helper method to find existing ticket path for duplicate detection
-        /// </summary>
-        private string? FindExistingTicketPath(string eventId, string eventName, string firstName, string paymentGuid)
-        {
-            try
-            {
-                // Try to find an existing ticket file based on naming convention
-                var expectedFileName = $"Ticket_{eventId}_{eventName}_{firstName}_{paymentGuid}.pdf"
-                    .Replace(" ", "_")
-                    .Replace(":", "")
-                    .Replace("/", "_")
-                    .Replace("\\", "_");
-                
-                var expectedPath = Path.Combine(_ticketStoragePath, expectedFileName);
-                
-                if (File.Exists(expectedPath))
-                {
-                    _logger.LogInformation("🎯 NEW ARCHITECTURE - Found existing ticket file: {TicketPath}", expectedPath);
-                    return expectedPath;
-                }
-                
-                _logger.LogInformation("🎯 NEW ARCHITECTURE - No existing ticket file found for: {ExpectedPath}", expectedPath);
-                return null;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "🎯 NEW ARCHITECTURE - Error searching for existing ticket file");
-                return null;
             }
         }
 
@@ -400,7 +374,10 @@ namespace EventBooking.API.Services
                         string fullImageUrl = finalEventImageUrl;
                         if (finalEventImageUrl.StartsWith("/"))
                         {
-                            fullImageUrl = $"http://localhost:5000{finalEventImageUrl}";
+                            var baseUrl = _configuration["ApplicationSettings:BaseUrl"] 
+                                         ?? _configuration["QRTickets:BaseUrl"] 
+                                         ?? "http://localhost:5000"; // Fallback
+                            fullImageUrl = $"{baseUrl.TrimEnd('/')}{finalEventImageUrl}";
                             _logger.LogInformation("Converting relative URL to absolute: {RelativeUrl} -> {FullUrl}", finalEventImageUrl, fullImageUrl);
                         }
                         
@@ -515,7 +492,7 @@ namespace EventBooking.API.Services
                     }
                 }
 
-                // ATTENDEE INFORMATION - VIP Cinema Style
+                // ATTENDEE INFORMATION - Cinema Style
                 var attendeeTable = new PdfPTable(2);
                 attendeeTable.WidthPercentage = 95;
                 attendeeTable.SetWidths(new float[] { 60f, 40f });
@@ -523,7 +500,7 @@ namespace EventBooking.API.Services
                 
                 // Left side - Attendee info
                 var attendeeHeaderFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 16, new BaseColor(255, 215, 0)); // Gold
-                var attendeeInfoText = $"🎪 VIP GUEST\n\n";
+                var attendeeInfoText = $"🎪 GUEST\n\n";
                 attendeeInfoText += $"👤 {firstName ?? "VALUED GUEST"}\n";
                 attendeeInfoText += $"🎫 Ticket ID: {eventId ?? "PREMIUM"}";
                 
@@ -557,16 +534,16 @@ namespace EventBooking.API.Services
                 attendeeTable.SpacingAfter = 20f;
                 document.Add(attendeeTable);
 
-                // CONCESSIONS SECTION - Cinema Style Food & Beverages
+                // CONCESSIONS SECTION - Food & Beverages for this Booking
                 if (foodOrders != null && foodOrders.Any())
                 {
-                    // Food section header with cinema concession styling
+                    // Food section header with improved styling
                     var concessionHeaderTable = new PdfPTable(1);
                     concessionHeaderTable.WidthPercentage = 95;
                     concessionHeaderTable.HorizontalAlignment = Element.ALIGN_CENTER;
                     
                     var foodHeaderFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 16, new BaseColor(255, 255, 255));
-                    var foodSectionTitle = new Paragraph("🍿 CONCESSION PACKAGE 🥤", foodHeaderFont);
+                    var foodSectionTitle = new Paragraph("🍿 FOOD & BEVERAGES ORDERED 🥤", foodHeaderFont);
                     foodSectionTitle.Alignment = Element.ALIGN_CENTER;
                     
                     var concessionHeaderCell = new PdfPCell(foodSectionTitle);
@@ -580,17 +557,17 @@ namespace EventBooking.API.Services
                     concessionHeaderTable.SpacingAfter = 10f;
                     document.Add(concessionHeaderTable);
                     
-                    // Cinema-style food table with dark theme
+                    // Food table with improved styling
                     PdfPTable foodTable = new PdfPTable(4);
                     foodTable.WidthPercentage = 95;
                     foodTable.SetWidths(new float[] { 40f, 15f, 20f, 25f });
                     foodTable.HorizontalAlignment = Element.ALIGN_CENTER;
                     
-                    // Table headers with cinema styling
+                    // Table headers with improved styling
                     var tableHeaderFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 11, new BaseColor(255, 255, 255));
                     var headerCells = new[]
                     {
-                        new PdfPCell(new Phrase("🍿 CONCESSION ITEM", tableHeaderFont)),
+                        new PdfPCell(new Phrase("�️ FOOD ITEM", tableHeaderFont)),
                         new PdfPCell(new Phrase("QTY", tableHeaderFont)),
                         new PdfPCell(new Phrase("PRICE", tableHeaderFont)),
                         new PdfPCell(new Phrase("TOTAL", tableHeaderFont))
@@ -635,11 +612,11 @@ namespace EventBooking.API.Services
                         totalFoodCost += food.TotalPrice;
                     }
                     
-                    // Total row with special cinema styling
+                    // Total row with improved styling
                     var totalRowFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 12, new BaseColor(255, 215, 0));
                     var totalCells = new[]
                     {
-                        new PdfPCell(new Phrase("🎬 CONCESSION TOTAL", totalRowFont)) 
+                        new PdfPCell(new Phrase("🎬 FOOD TOTAL", totalRowFont)) 
                         { 
                             Colspan = 3, 
                             HorizontalAlignment = Element.ALIGN_RIGHT, 
@@ -817,10 +794,10 @@ namespace EventBooking.API.Services
             }
         }
 
-        public async Task<byte[]> GenerateProfessionalConcertTicketAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
+        public async Task<byte[]> GenerateProfessionalConcertTicketAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? ticketType = null, string? bookingReference = null)
         {
-            _logger.LogInformation("🎵 PROFESSIONAL DESIGN - Generating concert ticket for Event: {EventName}, Seat: {SeatNumber}, Attendee: {FirstName}, FoodItems: {FoodCount}",
-                eventName, seatNumber, firstName, foodOrders?.Count ?? 0);
+            _logger.LogInformation("🎵 PROFESSIONAL DESIGN - Generating concert ticket for Event: {EventName}, Seat: {SeatNumber}, Attendee: {FirstName}, TicketType: {TicketType}, BookingRef: {BookingRef}, FoodItems: {FoodCount}",
+                eventName, seatNumber, firstName, ticketType ?? "Standard", bookingReference ?? "N/A", foodOrders?.Count ?? 0);
 
             // Fetch additional event details and organizer information from database
             var eventDetails = await GetEventDetailsAsync(eventId);
@@ -895,8 +872,11 @@ namespace EventBooking.API.Services
                         }
                         else if (finalEventImageUrl.StartsWith("/"))
                         {
-                            // Relative path - convert to localhost URL
-                            string fullImageUrl = $"http://localhost:5000{finalEventImageUrl}";
+                            // Relative path - convert to configured base URL
+                            var baseUrl = _configuration["ApplicationSettings:BaseUrl"] 
+                                         ?? _configuration["QRTickets:BaseUrl"] 
+                                         ?? "http://localhost:5000"; // Fallback
+                            string fullImageUrl = $"{baseUrl.TrimEnd('/')}{finalEventImageUrl}";
                             eventImageBytes = await _httpClient.GetByteArrayAsync(fullImageUrl);
                         }
                         else if (Path.IsPathRooted(finalEventImageUrl) && File.Exists(finalEventImageUrl))
@@ -939,21 +919,21 @@ namespace EventBooking.API.Services
                 rightCell.Padding = 15f; // Reduced padding
                 rightCell.VerticalAlignment = Element.ALIGN_TOP;
 
-                // VIP Badge (Compact)
-                var vipTable = new PdfPTable(1);
-                vipTable.WidthPercentage = 100;
-                var vipFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 11, BaseColor.WHITE);
-                var vipPara = new Paragraph("CONCERT GUEST", vipFont);
-                vipPara.Alignment = Element.ALIGN_CENTER;
+                // Guest Badge (Compact)
+                var guestTable = new PdfPTable(1);
+                guestTable.WidthPercentage = 100;
+                var guestFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 11, BaseColor.WHITE);
+                var guestPara = new Paragraph("CONCERT GUEST", guestFont);
+                guestPara.Alignment = Element.ALIGN_CENTER;
                 
-                var vipCell = new PdfPCell(vipPara);
-                vipCell.BackgroundColor = new BaseColor(255, 107, 107);
-                vipCell.BorderWidth = 0f;
-                vipCell.Padding = 6f;
-                vipCell.HorizontalAlignment = Element.ALIGN_CENTER;
-                vipTable.AddCell(vipCell);
-                vipTable.SpacingAfter = 10f;
-                rightCell.AddElement(vipTable);
+                var guestCell = new PdfPCell(guestPara);
+                guestCell.BackgroundColor = new BaseColor(255, 107, 107);
+                guestCell.BorderWidth = 0f;
+                guestCell.Padding = 6f;
+                guestCell.HorizontalAlignment = Element.ALIGN_CENTER;
+                guestTable.AddCell(guestCell);
+                guestTable.SpacingAfter = 10f;
+                rightCell.AddElement(guestTable);
 
                 // Attendee Name (Compact)
                 var nameFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 16, new BaseColor(45, 55, 72));
@@ -962,39 +942,61 @@ namespace EventBooking.API.Services
                 namePara.SpacingAfter = 10f;
                 rightCell.AddElement(namePara);
 
-                // Seat Information (Compact)
-                var seatTable = new PdfPTable(2);
-                seatTable.WidthPercentage = 100;
+                // Ticket Information (Compact) - 2x2 Grid
+                var ticketInfoTable = new PdfPTable(2);
+                ticketInfoTable.WidthPercentage = 100;
                 
-                var seatLabelFont = FontFactory.GetFont(FontFactory.HELVETICA, 9, new BaseColor(78, 205, 196));
-                var seatValueFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 14, new BaseColor(45, 55, 72));
+                var labelFont = FontFactory.GetFont(FontFactory.HELVETICA, 9, new BaseColor(78, 205, 196));
+                var valueFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 14, new BaseColor(45, 55, 72));
                 
-                // Section
-                var sectionCell = new PdfPCell();
-                sectionCell.BorderWidth = 0f;
-                sectionCell.Padding = 8f;
-                sectionCell.HorizontalAlignment = Element.ALIGN_CENTER;
-                var sectionPara = new Paragraph();
-                sectionPara.Add(new Chunk("SECTION\n", seatLabelFont));
-                sectionPara.Add(new Chunk("VIP", seatValueFont));
-                sectionPara.Alignment = Element.ALIGN_CENTER;
-                sectionCell.AddElement(sectionPara);
-                
-                // Seat
-                var seatInfoCell = new PdfPCell();
-                seatInfoCell.BorderWidth = 0f;
-                seatInfoCell.Padding = 8f;
-                seatInfoCell.HorizontalAlignment = Element.ALIGN_CENTER;
+                // Seat Number
+                var seatCell = new PdfPCell();
+                seatCell.BorderWidth = 0f;
+                seatCell.Padding = 8f;
+                seatCell.HorizontalAlignment = Element.ALIGN_CENTER;
                 var seatPara = new Paragraph();
-                seatPara.Add(new Chunk("SEAT\n", seatLabelFont));
-                seatPara.Add(new Chunk(seatNumber ?? "GA", seatValueFont));
+                seatPara.Add(new Chunk("SEAT\n", labelFont));
+                seatPara.Add(new Chunk(seatNumber ?? "GA", valueFont));
                 seatPara.Alignment = Element.ALIGN_CENTER;
-                seatInfoCell.AddElement(seatPara);
+                seatCell.AddElement(seatPara);
                 
-                seatTable.AddCell(sectionCell);
-                seatTable.AddCell(seatInfoCell);
-                seatTable.SpacingAfter = 12f;
-                rightCell.AddElement(seatTable);
+                // Ticket Type
+                var typeCell = new PdfPCell();
+                typeCell.BorderWidth = 0f;
+                typeCell.Padding = 8f;
+                typeCell.HorizontalAlignment = Element.ALIGN_CENTER;
+                var typePara = new Paragraph();
+                typePara.Add(new Chunk("TYPE\n", labelFont));
+                typePara.Add(new Chunk(ticketType ?? "STANDARD", valueFont));
+                typePara.Alignment = Element.ALIGN_CENTER;
+                typeCell.AddElement(typePara);
+                
+                ticketInfoTable.AddCell(seatCell);
+                ticketInfoTable.AddCell(typeCell);
+                ticketInfoTable.SpacingAfter = 8f;
+                rightCell.AddElement(ticketInfoTable);
+
+                // Booking Reference (Full Width)
+                if (!string.IsNullOrEmpty(bookingReference))
+                {
+                    var bookingRefTable = new PdfPTable(1);
+                    bookingRefTable.WidthPercentage = 100;
+                    
+                    var bookingRefCell = new PdfPCell();
+                    bookingRefCell.BorderWidth = 0f;
+                    bookingRefCell.Padding = 8f;
+                    bookingRefCell.HorizontalAlignment = Element.ALIGN_CENTER;
+                    var bookingRefPara = new Paragraph();
+                    bookingRefPara.Add(new Chunk("BOOKING REFERENCE\n", labelFont));
+                    bookingRefPara.Add(new Chunk(bookingReference, 
+                        FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 12, new BaseColor(45, 55, 72))));
+                    bookingRefPara.Alignment = Element.ALIGN_CENTER;
+                    bookingRefCell.AddElement(bookingRefPara);
+                    
+                    bookingRefTable.AddCell(bookingRefCell);
+                    bookingRefTable.SpacingAfter = 12f;
+                    rightCell.AddElement(bookingRefTable);
+                }
 
                 // Food Orders Section (Compact)
                 if (foodOrders != null && foodOrders.Any())
@@ -1237,14 +1239,17 @@ namespace EventBooking.API.Services
             }
         }
 
-        public string SaveTicketLocally(byte[] pdfTicket, string eventId, string eventName, string firstName, string paymentGuid)
+        public string SaveTicketLocally(byte[] pdfTicket, string eventId, string eventName, string firstName, string paymentGuid, string seatNumber = "")
         {
             try
             {
-                // Create filename with timestamp
+                // Create filename with timestamp and seat number to prevent collisions
                 string sanitizedEventName = string.Join("_", eventName.Split(Path.GetInvalidFileNameChars()));
                 string sanitizedFirstName = string.Join("_", firstName.Split(Path.GetInvalidFileNameChars()));
-                string fileName = $"eTicket_{sanitizedEventName}_{sanitizedFirstName}_{paymentGuid}_{DateTime.Now:yyyyMMdd_HHmmss}.pdf";
+                string sanitizedSeatNumber = string.Join("_", seatNumber.Split(Path.GetInvalidFileNameChars()));
+                
+                // 🎯 CRITICAL FIX: Include seat number and milliseconds to ensure unique filenames
+                string fileName = $"eTicket_{sanitizedEventName}_{sanitizedFirstName}_{paymentGuid}_{sanitizedSeatNumber}_{DateTime.Now:yyyyMMdd_HHmmss_fff}.pdf";
                 string filePath = Path.Combine(_ticketStoragePath, fileName);
 
                 // Save the file

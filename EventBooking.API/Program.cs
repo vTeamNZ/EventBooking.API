@@ -53,7 +53,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", builder =>
     {
-        builder.WithOrigins("https://kiwilanka.co.nz", "http://localhost:3000")
+        builder.WithOrigins("https://kiwilanka.co.nz", "http://localhost:3000", "https://thelankanspace.co.nz")
                .AllowAnyMethod()
                .AllowAnyHeader()
                .AllowCredentials();

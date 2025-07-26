@@ -16,17 +16,20 @@ namespace EventBooking.API.Controllers
         private readonly ILogger<BookingsController> _logger;
         private readonly IQRTicketService _qrTicketService;
         private readonly IEmailService _emailService;
+        private readonly IConfiguration _configuration;
 
         public BookingsController(
             AppDbContext context, 
             ILogger<BookingsController> logger,
             IQRTicketService qrTicketService,
-            IEmailService emailService)
+            IEmailService emailService,
+            IConfiguration configuration)
         {
             _context = context;
             _logger = logger;
             _qrTicketService = qrTicketService;
             _emailService = emailService;
+            _configuration = configuration;
         }
 
         // GET: api/Bookings
@@ -463,7 +466,8 @@ namespace EventBooking.API.Controllers
                             eventItem.Id.ToString(),
                             eventItem.Title,
                             request.FirstName,
-                            paymentGuid
+                            paymentGuid,
+                            lineItem.SeatDetails
                         );
 
                         // Update the line item with QR identifier (not full base64 image)
@@ -500,18 +504,31 @@ namespace EventBooking.API.Controllers
                 {
                     if (ticketPaths.Any())
                     {
-                        // Use the full path that was saved by QRTicketService
+                        // Use the first ticket PDF and generate QR code for enhanced email
                         var firstTicketPath = ticketPaths.First();
                         if (System.IO.File.Exists(firstTicketPath))
                         {
                             var ticketPdf = await System.IO.File.ReadAllBytesAsync(firstTicketPath);
-                            var emailSent = await _emailService.SendTicketEmailAsync(
+                            
+                            // Generate QR code for the enhanced email
+                            var firstLineItem = lineItems.First();
+                            var qrCodeImage = _qrTicketService.GenerateQrCode(
+                                eventItem.Id.ToString(),
+                                eventItem.Title,
+                                firstLineItem.SeatDetails,
+                                request.FirstName,
+                                paymentGuid
+                            );
+                            
+                            var emailSent = await _emailService.SendEnhancedTicketEmailAsync(
                                 request.BuyerEmail,
                                 eventItem.Title,
                                 request.FirstName,
                                 ticketPdf,
                                 new List<FoodOrderInfo>(), // Empty food orders for organizer bookings
-                                fullImageUrl // Include event flyer in email with full URL
+                                fullImageUrl, // Include event flyer in email with full URL
+                                qrCodeImage, // QR code for enhanced email
+                                booking.Id.ToString() // Booking ID for reference
                             );
 
                             if (emailSent)
@@ -554,7 +571,7 @@ namespace EventBooking.API.Controllers
             }
         }
 
-        // Helper method to convert relative image URLs to full URLs
+        // Helper method to convert relative image URLs to full URLs using configuration
         private string? GetFullImageUrl(string? relativeUrl)
         {
             if (string.IsNullOrEmpty(relativeUrl))
@@ -564,13 +581,15 @@ namespace EventBooking.API.Controllers
             if (relativeUrl.StartsWith("http://") || relativeUrl.StartsWith("https://"))
                 return relativeUrl;
 
-            // Images are served as static files from this API server via wwwroot
-            // Use the current request's scheme and host to build the full URL
-            var scheme = Request.Scheme;
-            var host = Request.Host;
-            var fullUrl = $"{scheme}://{host}{(relativeUrl.StartsWith("/") ? relativeUrl : "/" + relativeUrl)}";
+            // Use configured base URL for consistent environment-specific URLs
+            var baseUrl = _configuration["ApplicationSettings:BaseUrl"] 
+                         ?? _configuration["QRTickets:BaseUrl"] 
+                         ?? $"{Request.Scheme}://{Request.Host}"; // Fallback to request-based
+
+            var fullUrl = $"{baseUrl.TrimEnd('/')}{(relativeUrl.StartsWith("/") ? relativeUrl : "/" + relativeUrl)}";
             
-            _logger.LogDebug("Converted relative URL '{RelativeUrl}' to full URL '{FullUrl}'", relativeUrl, fullUrl);
+            _logger.LogDebug("Converted relative URL '{RelativeUrl}' to full URL '{FullUrl}' using base '{BaseUrl}'", 
+                relativeUrl, fullUrl, baseUrl);
             return fullUrl;
         }
     }

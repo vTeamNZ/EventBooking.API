@@ -7,7 +7,8 @@ namespace EventBooking.API.Services
         Task<QRTicketResult> GenerateQRTicketAsync(QRTicketRequest request);
         byte[] GenerateQrCode(string eventId, string eventName, string seatNumber, string firstName, string paymentGuid);
         Task<byte[]> GenerateTicketPdfAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null);
-        string SaveTicketLocally(byte[] pdfTicket, string eventId, string eventName, string firstName, string paymentGuid);
+        Task<byte[]> GenerateProfessionalConcertTicketAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? ticketType = null, string? bookingReference = null);
+        string SaveTicketLocally(byte[] pdfTicket, string eventId, string eventName, string firstName, string paymentGuid, string seatNumber);
         List<string> ListStoredTickets();
         bool DeleteStoredTicket(string fileName);
     }
@@ -24,6 +25,8 @@ namespace EventBooking.API.Services
         public int? BookingId { get; set; } // Link to main Bookings table
         public List<FoodOrderInfo> FoodOrders { get; set; } = new(); // ✅ Individual food orders for this ticket
         public string? EventImageUrl { get; set; } // ✅ Event flyer/image URL for professional appearance
+        public string? TicketType { get; set; } // ✅ Ticket type (VIP, Premium, Standard, etc.)
+        public string? BookingReference { get; set; } // ✅ Booking reference number
     }
 
     public class FoodOrderInfo
@@ -33,6 +36,7 @@ namespace EventBooking.API.Services
         public decimal UnitPrice { get; set; }
         public decimal TotalPrice { get; set; }
         public string? Description { get; set; }
+        public string? SeatAssignment { get; set; } // 🎯 CRITICAL: Track which seat this food item is assigned to
     }
 
     public class QRTicketResult
@@ -42,7 +46,7 @@ namespace EventBooking.API.Services
         public string? BookingId { get; set; }
         public string? ErrorMessage { get; set; }
         public bool IsDuplicate { get; set; }
-        public byte[]? QRCodeImage { get; set; }
+        public byte[]? QRCodeImage { get; set; } 
         public string? EventImageUrl { get; set; }
     }
 }

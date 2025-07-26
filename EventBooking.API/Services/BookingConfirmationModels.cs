@@ -1,4 +1,5 @@
 using EventBooking.API.Models;
+using EventBooking.API.Services;
 
 namespace EventBooking.API.Services
 {
@@ -60,6 +61,10 @@ namespace EventBooking.API.Services
         public string? BookingId { get; set; }
         public string? ErrorMessage { get; set; }
         public bool IsDuplicate { get; set; }
+        
+        // ✅ NEW: Properties for consolidated email sending
+        public byte[]? QRCodeImage { get; set; }
+        public List<FoodOrderInfo>? SeatSpecificFoodOrders { get; set; }
         
         // ✅ NEW: Email sending results for user feedback
         public EmailDeliveryResult CustomerEmailResult { get; set; } = new();
