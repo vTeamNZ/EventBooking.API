@@ -54,7 +54,23 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", builder =>
     {
-        builder.WithOrigins("https://kiwilanka.co.nz", "http://localhost:3000", "https://thelankanspace.co.nz")
+        // Get allowed origins from configuration
+        var allowedOrigins = new List<string> { "http://localhost:3000" }; // Always allow local development
+        
+        // Add environment-specific origins
+        var baseUrl = configuration["ApplicationSettings:BaseUrl"];
+        if (!string.IsNullOrEmpty(baseUrl))
+        {
+            allowedOrigins.Add(baseUrl);
+        }
+        
+        // Add fallback production URL if not in config
+        if (!allowedOrigins.Any(o => o.Contains("kiwilanka.co.nz")))
+        {
+            allowedOrigins.Add("https://kiwilanka.co.nz");
+        }
+
+        builder.WithOrigins(allowedOrigins.ToArray())
                .AllowAnyMethod()
                .AllowAnyHeader()
                .AllowCredentials();
