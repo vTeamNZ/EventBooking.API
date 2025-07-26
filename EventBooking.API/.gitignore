@@ -15,6 +15,7 @@ appsettings.Development.json
 appsettings.Production.json
 appsettings.*.backup.json
 appsettings.kwdb*.json
+appsettings.Test.json
 
 # Keep template
 !appsettings.template.json
