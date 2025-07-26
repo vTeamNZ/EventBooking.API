@@ -52,13 +52,13 @@ builder.Services.AddEndpointsApiExplorer();
 // Configure CORS
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowFrontend", builder =>
+    options.AddPolicy("AllowFrontend", corsBuilder =>
     {
         // Get allowed origins from configuration
         var allowedOrigins = new List<string> { "http://localhost:3000" }; // Always allow local development
         
         // Add environment-specific origins
-        var baseUrl = configuration["ApplicationSettings:BaseUrl"];
+        var baseUrl = builder.Configuration["ApplicationSettings:BaseUrl"];
         if (!string.IsNullOrEmpty(baseUrl))
         {
             allowedOrigins.Add(baseUrl);
@@ -70,7 +70,7 @@ builder.Services.AddCors(options =>
             allowedOrigins.Add("https://kiwilanka.co.nz");
         }
 
-        builder.WithOrigins(allowedOrigins.ToArray())
+        corsBuilder.WithOrigins(allowedOrigins.ToArray())
                .AllowAnyMethod()
                .AllowAnyHeader()
                .AllowCredentials();
