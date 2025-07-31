@@ -1,4 +1,4 @@
-# Event Booking System Requirements
+# Professional Ticketing Platform Requirements
 
 ## Current Implementation
 

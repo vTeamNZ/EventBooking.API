@@ -30,7 +30,7 @@ namespace EventBooking.API.Services
             _smtpUsername = _configuration["Email:Username"] ?? throw new ArgumentException("Email:Username not configured");
             _smtpPassword = _configuration["Email:Password"] ?? throw new ArgumentException("Email:Password not configured");
             _fromEmail = _configuration["Email:FromEmail"] ?? "support@kiwilanka.co.nz";
-            _fromName = _configuration["Email:FromName"] ?? "KiwiLanka Events";
+            _fromName = _configuration["Email:FromName"] ?? "KiwiLanka Tickets";
         }
 
 
@@ -281,7 +281,7 @@ namespace EventBooking.API.Services
     <div class='container'>
         <div class='header'>
             <h1>🎉 New Booking Received!</h1>
-            <p>KiwiLanka Events - Organizer Portal</p>
+            <p>KiwiLanka Tickets - Organizer Portal</p>
         </div>
         
         <div class='content'>
@@ -316,12 +316,12 @@ namespace EventBooking.API.Services
             </div>
             
             <p style='text-align: center; font-size: 16px; color: #28a745; margin: 30px 0;'>
-                <strong>Thank you for using KiwiLanka Events! 🚀</strong>
+                <strong>Thank you for using KiwiLanka Tickets! 🚀</strong>
             </p>
         </div>
         
         <div class='footer'>
-            <p style='margin: 0; font-size: 14px;'>© 2025 KiwiLanka Events | support@kiwilanka.co.nz</p>
+            <p style='margin: 0; font-size: 14px;'>© 2025 KiwiLanka Tickets | support@kiwilanka.co.nz</p>
             <p style='margin: 5px 0 0 0; font-size: 12px; opacity: 0.8;'>Organizer Notification System</p>
         </div>
     </div>
@@ -392,7 +392,7 @@ namespace EventBooking.API.Services
     <div class='container'>
         <div class='header'>
             <h1>🎫 Your Event Ticket</h1>
-            <p>KiwiLanka Events - Digital Ticket System</p>
+            <p>KiwiLanka Tickets - Digital Ticket System</p>
         </div>
         
         <div class='content'>
@@ -440,7 +440,7 @@ namespace EventBooking.API.Services
         </div>
         
         <div class='footer'>
-            <p style='margin: 0; font-size: 14px;'>© 2025 KiwiLanka Events | support@kiwilanka.co.nz</p>
+            <p style='margin: 0; font-size: 14px;'>© 2025 KiwiLanka Tickets | support@kiwilanka.co.nz</p>
             <p style='margin: 5px 0 0 0; font-size: 12px; opacity: 0.8;'>Digital Ticketing Platform</p>
         </div>
     </div>
@@ -667,7 +667,7 @@ namespace EventBooking.API.Services
                         
                         <div style='margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #666;'>
                             <p>This is an automated notification from KiwiLanka Ticketing Platform.</p>
-                            <p>© 2025 KiwiLanka Events | support@kiwilanka.co.nz</p>
+                            <p>© 2025 KiwiLanka Tickets | support@kiwilanka.co.nz</p>
                         </div>
                     </div>
                 </body>
@@ -776,7 +776,7 @@ namespace EventBooking.API.Services
         </div>
         
         <div style='margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; text-align: center; font-size: 12px; color: #666;'>
-            <p>© 2025 KiwiLanka Events | support@kiwilanka.co.nz</p>
+            <p>© 2025 KiwiLanka Tickets | support@kiwilanka.co.nz</p>
             <p>Digital Ticketing Platform</p>
         </div>
     </div>
