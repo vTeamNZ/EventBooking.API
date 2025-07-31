@@ -85,9 +85,9 @@ builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Event Booking API",
+        Title = "KiwiLanka Ticketing API",
         Version = "v1",
-        Description = "API for Event Booking System"
+        Description = "API for KiwiLanka Ticketing Platform"
     });
 
     // Add JWT bearer security scheme
@@ -327,7 +327,7 @@ if (app.Environment.IsDevelopment() || app.Environment.IsStaging() || app.Enviro
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
-        c.SwaggerEndpoint("/api/swagger/v1/swagger.json", "Event Booking API v1");
+        c.SwaggerEndpoint("/api/swagger/v1/swagger.json", "KiwiLanka Ticketing API v1");
         c.RoutePrefix = string.Empty; // Set Swagger UI at the app's root
     });
 }
