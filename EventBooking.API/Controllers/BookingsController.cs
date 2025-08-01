@@ -355,8 +355,21 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogInformation("Creating organizer direct booking for event {EventId} by {User}", request.EventId, User.Identity?.Name);
 
-                // Get the event
-                var eventItem = await _context.Events.FindAsync(request.EventId);
+                // Validate request
+                if (string.IsNullOrWhiteSpace(request.BuyerEmail))
+                {
+                    return BadRequest("BuyerEmail is required and cannot be empty");
+                }
+
+                if (string.IsNullOrWhiteSpace(request.FirstName))
+                {
+                    return BadRequest("FirstName is required and cannot be empty");
+                }
+
+                // Get the event with organizer information
+                var eventItem = await _context.Events
+                    .Include(e => e.Organizer)
+                    .FirstOrDefaultAsync(e => e.Id == request.EventId);
                 if (eventItem == null)
                 {
                     return BadRequest("Event not found");
@@ -499,7 +512,7 @@ namespace EventBooking.API.Controllers
                 // Update line items with QR codes
                 await _context.SaveChangesAsync();
 
-                // Send email with all tickets to the buyer
+                // Send email with tickets to the buyer
                 try
                 {
                     if (ticketPaths.Any())
@@ -552,13 +565,61 @@ namespace EventBooking.API.Controllers
                     // Don't fail the entire request if email fails
                 }
 
+                // Send organizer notification email
+                try
+                {
+                    if (eventItem.Organizer != null && !string.IsNullOrWhiteSpace(eventItem.Organizer.ContactEmail))
+                    {
+                        if (ticketPaths.Any())
+                        {
+                            var firstTicketPath = ticketPaths.First();
+                            if (System.IO.File.Exists(firstTicketPath))
+                            {
+                                var ticketPdf = await System.IO.File.ReadAllBytesAsync(firstTicketPath);
+                                
+                                var organizerEmailSent = await _emailService.SendOrganizerNotificationAsync(
+                                    eventItem.Organizer.ContactEmail,
+                                    eventItem.Title,
+                                    request.FirstName,
+                                    request.BuyerEmail,
+                                    ticketPdf,
+                                    new List<FoodOrderInfo>(), // Empty food orders for organizer bookings
+                                    fullImageUrl // Include event flyer
+                                );
+
+                                if (organizerEmailSent)
+                                {
+                                    _logger.LogInformation("Successfully sent organizer notification email to {OrganizerEmail}", eventItem.Organizer.ContactEmail);
+                                }
+                                else
+                                {
+                                    _logger.LogWarning("Failed to send organizer notification email to {OrganizerEmail}", eventItem.Organizer.ContactEmail);
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Ticket file not found for organizer notification: {Path}", firstTicketPath);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogWarning("No organizer contact email found for event {EventId}", eventItem.Id);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send organizer notification email for organizer booking {BookingId}", booking.Id);
+                    // Don't fail the entire request if organizer email fails
+                }
+
                 _logger.LogInformation("Created organizer booking {BookingId} with {SeatCount} seats and generated QR codes", booking.Id, request.SeatNumbers.Count);
 
                 return Ok(new OrganizerBookingResponse
                 {
                     BookingId = booking.Id,
                     PaymentGUID = paymentGuid,
-                    Message = "Organizer booking created successfully with QR codes and email sent",
+                    Message = "Organizer booking created successfully with QR codes. Email sent to buyer and organizer notification sent.",
                     EventName = eventItem.Title,
                     SeatNumbers = request.SeatNumbers,
                     TicketDetails = ticketDetails

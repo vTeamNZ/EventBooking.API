@@ -33,7 +33,14 @@ namespace EventBooking.API.Services
             _fromName = _configuration["Email:FromName"] ?? "KiwiLanka Tickets";
         }
 
+        public async Task<bool> SendTicketEmailAsync(string toEmail, string eventName, string firstName, byte[] ticketPdf, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
+        {
+            var subject = $"Your eTicket for {eventName}";
+            var htmlBody = GenerateBuyerEmailHtml(eventName, firstName, foodOrders, eventImageUrl);
+            var attachmentFileName = $"eTicket_{eventName}_{firstName}.pdf";
 
+            return await SendEmailWithAttachmentAsync(toEmail, subject, htmlBody, ticketPdf, attachmentFileName);
+        }
 
         public async Task<bool> SendOrganizerNotificationAsync(string organizerEmail, string eventName, string firstName, string buyerEmail, byte[] ticketPdf, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
         {
@@ -50,7 +57,7 @@ namespace EventBooking.API.Services
 
                 var bodyBuilder = new BodyBuilder();
                 
-                // Generate organizer HTML with embedded event image
+                // Generate organizer HTML with embedded event image - PRIVACY ENHANCED: buyerEmail not displayed
                 var htmlBody = GenerateOrganizerEmailHtml(eventName, firstName, buyerEmail, foodOrders, eventImageUrl);
                 bodyBuilder.HtmlBody = htmlBody;
 
@@ -223,6 +230,88 @@ namespace EventBooking.API.Services
             }
         }
 
+        private string GenerateBuyerEmailHtml(string eventName, string firstName, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
+        {
+            // Generate food orders HTML section
+            var foodOrdersHtml = "";
+            if (foodOrders != null && foodOrders.Any())
+            {
+                var foodItemsHtml = string.Join("", foodOrders.Select(food => 
+                    $"<li>{food.Quantity}x {food.Name} - ${food.UnitPrice:F2} each" + 
+                    (food.Quantity > 1 ? $" (Total: ${food.TotalPrice:F2})" : "") + "</li>"));
+                
+                var totalFoodCost = foodOrders.Sum(f => f.TotalPrice);
+                
+                foodOrdersHtml = $@"
+            <div class='ticket-info' style='border-left-color: #ff6b35;'>
+                <h3>🍕 Your Food Orders</h3>
+                <ul style='margin: 0; padding-left: 20px;'>
+                    {foodItemsHtml}
+                </ul>
+                <p style='margin-top: 10px; font-weight: bold;'>Food Total: ${totalFoodCost:F2}</p>
+                <p style='font-size: 11px; color: #666; margin-top: 8px;'>
+                    <em>Food orders will be available for pickup at the concession stand during the event.</em>
+                </p>
+            </div>";
+            }
+
+            return $@"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='utf-8'>
+    <title>Your Event Ticket</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }}
+        .content {{ background: #f9f9f9; padding: 20px; }}
+        .footer {{ background: #333; color: white; padding: 15px; text-align: center; border-radius: 0 0 8px 8px; }}
+        .ticket-info {{ background: white; padding: 15px; margin: 10px 0; border-left: 4px solid #667eea; }}
+        .button {{ display: inline-block; background: #667eea; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin: 10px 0; }}
+        .event-image {{ max-width: 100%; height: auto; border-radius: 8px; margin: 15px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+    </style>
+</head>
+<body>
+    <div class='container'>
+        <div class='header'>
+            <h1>🎫 Your Event Ticket</h1>
+            <p>KiwiLanka Events</p>
+        </div>
+        <div class='content'>
+            <h2>Hi {firstName}!</h2>
+            <p>Thank you for your booking! Your ticket for <strong>{eventName}</strong> is attached to this email.</p>
+            
+            {(!string.IsNullOrEmpty(eventImageUrl) ? $"<img src='{eventImageUrl}' alt='{eventName}' class='event-image' />" : "")}
+            
+            <div class='ticket-info'>
+                <h3>📅 Event Details</h3>
+                <p><strong>Event:</strong> {eventName}</p>
+                <p><strong>Attendee:</strong> {firstName}</p>
+                <p><strong>Status:</strong> ✅ Confirmed</p>
+            </div>
+            
+            {foodOrdersHtml}
+            
+            <h3>📱 Important Instructions:</h3>
+            <ul>
+                <li>Present your attached ticket (PDF) at the venue entrance</li>
+                <li>The QR code on your ticket will be scanned for entry</li>
+                <li>Please arrive 30 minutes before the event starts</li>
+                <li>Bring a valid photo ID</li>
+                {(foodOrders != null && foodOrders.Any() ? "<li><strong>Food pickup:</strong> Visit the concession stand with your ticket to collect your food orders</li>" : "")}
+            </ul>
+            
+            <p>We look forward to seeing you at the event!</p>
+        </div>
+        <div class='footer'>
+            <p>© 2025 KiwiLanka Events | support@kiwilanka.co.nz</p>
+        </div>
+    </div>
+</body>
+</html>";
+        }
+
         private string GenerateOrganizerEmailHtml(string eventName, string firstName, string buyerEmail, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null)
         {
             // Generate food orders HTML section for organizer
@@ -294,10 +383,9 @@ namespace EventBooking.API.Services
             </div>" : "")}
             
             <div class='booking-info'>
-                <h3 style='margin: 0 0 15px 0; color: #28a745;'>� Booking Details</h3>
+                <h3 style='margin: 0 0 15px 0; color: #28a745;'>📊 Booking Details</h3>
                 <p style='margin: 5px 0;'><strong>Event:</strong> {eventName}</p>
                 <p style='margin: 5px 0;'><strong>Attendee:</strong> {firstName}</p>
-                <p style='margin: 5px 0;'><strong>Buyer Email:</strong> {buyerEmail}</p>
                 <p style='margin: 5px 0;'><strong>Booking Time:</strong> {DateTime.UtcNow:yyyy-MM-dd HH:mm} UTC</p>
                 <p style='margin: 5px 0;'><strong>Status:</strong> <span style='color: #28a745; font-weight: bold;'>✅ Confirmed & Paid</span></p>
             </div>
@@ -463,7 +551,7 @@ namespace EventBooking.API.Services
             try
             {
                 var message = new MimeMessage();
-                message.From.Add(new MailboxAddress(_configuration["Email:SenderName"], _configuration["Email:SenderEmail"]));
+                message.From.Add(new MailboxAddress(_fromName, _fromEmail));
                 message.To.Add(new MailboxAddress(firstName, toEmail));
                 message.Subject = $"Your Tickets for {eventName}";
 
@@ -511,9 +599,6 @@ namespace EventBooking.API.Services
                     </div>";
                 }
                 
-                // Create multipart/alternative for both HTML and plain text
-                var multipart = new Multipart("mixed");
-                
                 // Generate HTML body
                 string htmlBody = GenerateConsolidatedHtmlEmail(eventName, firstName, foodOrdersHtml, ticketAttachments.Count, bookingReference, eventImageUrl);
                 builder.HtmlBody = htmlBody;
@@ -539,21 +624,15 @@ namespace EventBooking.API.Services
                     }
                 }
                 
-                multipart.Add(builder.ToMessageBody());
-                message.Body = multipart;
+                message.Body = builder.ToMessageBody();
                 
                 // Send the email
                 using (var client = new SmtpClient())
                 {
-                    client.Connect(_configuration["Email:SmtpServer"], int.Parse(_configuration["Email:SmtpPort"] ?? "587"), false);
-                    
-                    if (bool.Parse(_configuration["Email:UseAuthentication"] ?? "true"))
-                    {
-                        client.Authenticate(_configuration["Email:Username"], _configuration["Email:Password"]);
-                    }
-                    
+                    await client.ConnectAsync(_smtpServer, _smtpPort, SecureSocketOptions.StartTls);
+                    await client.AuthenticateAsync(_smtpUsername, _smtpPassword);
                     await client.SendAsync(message);
-                    client.Disconnect(true);
+                    await client.DisconnectAsync(true);
                 }
                 
                 _logger.LogInformation("Successfully sent consolidated booking email to {Email} with {TicketCount} tickets", toEmail, ticketAttachments.Count);
@@ -568,6 +647,7 @@ namespace EventBooking.API.Services
         
         /// <summary>
         /// 🎯 NEW: Send one consolidated organizer notification per booking with all tickets and seat-specific food items
+        /// PRIVACY ENHANCED: Buyer email is not displayed in the email template
         /// </summary>
         public async Task<bool> SendConsolidatedOrganizerNotificationAsync(
             string organizerEmail, 
@@ -582,7 +662,7 @@ namespace EventBooking.API.Services
             try
             {
                 var message = new MimeMessage();
-                message.From.Add(new MailboxAddress(_configuration["Email:SenderName"], _configuration["Email:SenderEmail"]));
+                message.From.Add(new MailboxAddress(_fromName, _fromEmail));
                 message.To.Add(new MailboxAddress("Event Organizer", organizerEmail));
                 message.Subject = $"New Booking for {eventName} - {bookingReference}";
 
@@ -630,10 +710,7 @@ namespace EventBooking.API.Services
                     </div>";
                 }
                 
-                // Create multipart/alternative for both HTML and plain text
-                var multipart = new Multipart("mixed");
-                
-                // Generate HTML body for organizer
+                // Generate HTML body for organizer - PRIVACY ENHANCED: No buyer email displayed
                 string htmlBody = $@"
                 <!DOCTYPE html>
                 <html>
@@ -653,7 +730,6 @@ namespace EventBooking.API.Services
                             <h3 style='margin: 0 0 15px; color: #333;'>Booking Details</h3>
                             <p><strong>Event:</strong> {eventName}</p>
                             <p><strong>Customer:</strong> {firstName}</p>
-                            <p><strong>Email:</strong> {buyerEmail}</p>
                             <p><strong>Booking Reference:</strong> {bookingReference}</p>
                             <p><strong>Tickets:</strong> {ticketAttachments.Count} seat(s) booked</p>
                         </div>
@@ -696,21 +772,15 @@ namespace EventBooking.API.Services
                     }
                 }
                 
-                multipart.Add(builder.ToMessageBody());
-                message.Body = multipart;
+                message.Body = builder.ToMessageBody();
                 
                 // Send the email
                 using (var client = new SmtpClient())
                 {
-                    client.Connect(_configuration["Email:SmtpServer"], int.Parse(_configuration["Email:SmtpPort"] ?? "587"), false);
-                    
-                    if (bool.Parse(_configuration["Email:UseAuthentication"] ?? "true"))
-                    {
-                        client.Authenticate(_configuration["Email:Username"], _configuration["Email:Password"]);
-                    }
-                    
+                    await client.ConnectAsync(_smtpServer, _smtpPort, SecureSocketOptions.StartTls);
+                    await client.AuthenticateAsync(_smtpUsername, _smtpPassword);
                     await client.SendAsync(message);
-                    client.Disconnect(true);
+                    await client.DisconnectAsync(true);
                 }
                 
                 _logger.LogInformation("Successfully sent consolidated organizer notification to {Email} with {TicketCount} tickets", organizerEmail, ticketAttachments.Count);
