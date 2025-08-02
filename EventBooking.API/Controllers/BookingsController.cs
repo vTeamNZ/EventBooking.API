@@ -462,15 +462,17 @@ namespace EventBooking.API.Controllers
                             paymentGuid
                         );
 
-                        // Generate ticket PDF
-                        var ticketPdf = await _qrTicketService.GenerateTicketPdfAsync(
+                        // Generate ticket PDF using professional concert template
+                        var ticketPdf = await _qrTicketService.GenerateProfessionalConcertTicketAsync(
                             eventItem.Id.ToString(),
                             eventItem.Title,
                             lineItem.SeatDetails,
                             request.FirstName,
                             qrCode,
                             new List<FoodOrderInfo>(), // Empty food orders for organizer bookings
-                            fullImageUrl // Add event flyer with full URL
+                            fullImageUrl, // Add event flyer with full URL
+                            "Organizer", // Specify ticket type as "Organizer"
+                            paymentGuid // Use payment GUID as booking reference
                         );
 
                         // Save ticket locally and get the path

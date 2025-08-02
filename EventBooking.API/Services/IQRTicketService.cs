@@ -1,4 +1,5 @@
 using EventBooking.API.Models;
+using System;
 
 namespace EventBooking.API.Services
 {
@@ -6,7 +7,11 @@ namespace EventBooking.API.Services
     {
         Task<QRTicketResult> GenerateQRTicketAsync(QRTicketRequest request);
         byte[] GenerateQrCode(string eventId, string eventName, string seatNumber, string firstName, string paymentGuid);
-        Task<byte[]> GenerateTicketPdfAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null);
+        
+        /// <summary>
+        /// Generates a professional concert ticket with enhanced styling and features.
+        /// This is the preferred ticket generation method for all use cases.
+        /// </summary>
         Task<byte[]> GenerateProfessionalConcertTicketAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? ticketType = null, string? bookingReference = null);
         string SaveTicketLocally(byte[] pdfTicket, string eventId, string eventName, string firstName, string paymentGuid, string seatNumber);
         List<string> ListStoredTickets();
