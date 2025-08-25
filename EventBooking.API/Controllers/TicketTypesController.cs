@@ -66,7 +66,10 @@ namespace EventBooking.API.Controllers
                 Description = dto.Description,
                 EventId = dto.EventId,
                 Color = dto.Color, // Add the color from the DTO
-                MaxTickets = dto.MaxTickets // Add maximum tickets for General Admission events
+                // For standing tickets, use StandingCapacity as MaxTickets to avoid duplication
+                MaxTickets = dto.IsStanding ? dto.StandingCapacity : dto.MaxTickets,
+                IsStanding = dto.IsStanding, // New: Standing ticket flag
+                StandingCapacity = dto.StandingCapacity // Keep for backward compatibility, but MaxTickets is the source of truth
             };
 
             // If venue has allocated seating and row assignments are provided
@@ -136,7 +139,10 @@ namespace EventBooking.API.Controllers
                         Description = dto.Description,
                         EventId = dto.EventId,
                         Color = dto.Color, // Add the color from the DTO
-                        MaxTickets = dto.MaxTickets // Add maximum tickets for General Admission events
+                        // For standing tickets, use StandingCapacity as MaxTickets to avoid duplication
+                        MaxTickets = dto.IsStanding ? dto.StandingCapacity : dto.MaxTickets,
+                        IsStanding = dto.IsStanding, // New: Standing ticket flag
+                        StandingCapacity = dto.StandingCapacity // Keep for backward compatibility, but MaxTickets is the source of truth
                     };
 
                     // If venue has allocated seating and row assignments are provided

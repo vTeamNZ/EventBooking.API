@@ -395,7 +395,7 @@ namespace EventBooking.API.Controllers
                     return BadRequest("This event has ended and is no longer available for booking");
                 }
 
-                // Only validate seats for EventHall events (allocated seating)
+                // Only validate seats for EventHall events (allocated seating) and Hybrid events with seats
                 if (eventItem.SeatSelectionMode == SeatSelectionMode.EventHall)
                 {
                     // For allocated seating events, seats must be provided and valid
@@ -411,6 +411,20 @@ namespace EventBooking.API.Controllers
                         return BadRequest("One or more selected seats are not available or not reserved by your session");
                     }
                 }
+                else if (eventItem.SeatSelectionMode == SeatSelectionMode.Hybrid)
+                {
+                    // For hybrid events, validate seats only if they are provided
+                    if (request.SelectedSeats != null && request.SelectedSeats.Any())
+                    {
+                        // Validate seats with session ownership check
+                        var seatsValid = await ValidateSelectedSeats(request.EventId, request.SelectedSeats, request.UserSessionId);
+                        if (!seatsValid)
+                        {
+                            return BadRequest("One or more selected seats are not available or not reserved by your session");
+                        }
+                    }
+                    // Note: For hybrid events, it's valid to have no seats selected (standing tickets only)
+                }
                 else if (eventItem.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
                 {
                     // For general admission events, seats should not be provided
@@ -420,8 +434,9 @@ namespace EventBooking.API.Controllers
                     }
                 }
 
-                // Validate ticket availability for General Admission events
-                if (eventItem.SeatSelectionMode == SeatSelectionMode.GeneralAdmission && 
+                // Validate ticket availability for General Admission and Hybrid events
+                if ((eventItem.SeatSelectionMode == SeatSelectionMode.GeneralAdmission ||
+                     eventItem.SeatSelectionMode == SeatSelectionMode.Hybrid) && 
                     request.TicketDetails != null && request.TicketDetails.Any())
                 {
                     foreach (var ticket in request.TicketDetails)

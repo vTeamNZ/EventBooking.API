@@ -116,6 +116,8 @@ namespace EventBooking.API.DTOs
         public string Description { get; set; } = string.Empty;
         public string Color { get; set; } = string.Empty; // Added color for UI display
         public string? SeatRowAssignments { get; set; } // Added for frontend to know which rows are for this ticket type
+        public bool IsStanding { get; set; } = false; // NEW: Standing ticket flag
+        public int? StandingCapacity { get; set; } // NEW: Standing capacity
     }
 
     public class ReserveMultipleSeatsRequest

@@ -64,33 +64,46 @@ namespace EventBooking.API.Services
                 .Where(tt => tt.EventId == eventId)
                 .ToListAsync();
             
-            if (!ticketTypes.Any())
+            // Filter to only seated ticket types (exclude standing tickets)
+            var seatedTicketTypes = ticketTypes.Where(tt => !tt.IsStanding).ToList();
+            
+            if (!seatedTicketTypes.Any())
             {
-                _logger.LogInformation("No ticket types found for event {EventId}, creating default ticket type", eventId);
-                var defaultTicketType = new TicketType
+                // Check if we have any ticket types at all
+                if (!ticketTypes.Any())
                 {
-                    Type = "General",
-                    Name = "General",
-                    Color = "#4B5563",
-                    Price = event_.Price ?? 50.0m,
-                    EventId = eventId,
-                };
-                _context.TicketTypes.Add(defaultTicketType);
-                await _context.SaveChangesAsync();
-                ticketTypes.Add(defaultTicketType);
+                    _logger.LogInformation("No ticket types found for event {EventId}, creating default seated ticket type", eventId);
+                    var defaultTicketType = new TicketType
+                    {
+                        Type = "General",
+                        Name = "General",
+                        Color = "#4B5563",
+                        Price = event_.Price ?? 50.0m,
+                        EventId = eventId,
+                        IsStanding = false // Ensure it's a seated ticket
+                    };
+                    _context.TicketTypes.Add(defaultTicketType);
+                    await _context.SaveChangesAsync();
+                    seatedTicketTypes.Add(defaultTicketType);
+                }
+                else
+                {
+                    _logger.LogInformation("Event {EventId} has only standing tickets, no seats will be created", eventId);
+                    return 0; // No seated tickets, no seats to create
+                }
             }
 
             var seats = new List<Seat>();
             int rowCount = venue.NumberOfRows > 0 ? venue.NumberOfRows : 10;
             int seatsPerRow = venue.SeatsPerRow > 0 ? venue.SeatsPerRow : 12;
             
-            // Distribute ticket types evenly across rows (e.g., premium in front, standard in back)
+            // Distribute seated ticket types evenly across rows (e.g., premium in front, standard in back)
             for (int row = 0; row < rowCount; row++)
             {
-                // Determine which ticket type this row belongs to based on position
+                // Determine which seated ticket type this row belongs to based on position
                 // Front rows get the first ticket types (usually more premium)
-                int ticketTypeIndex = (row * ticketTypes.Count) / rowCount;
-                var ticketType = ticketTypes[ticketTypeIndex];
+                int ticketTypeIndex = (row * seatedTicketTypes.Count) / rowCount;
+                var ticketType = seatedTicketTypes[ticketTypeIndex];
                 
                 for (int seatNum = 0; seatNum < seatsPerRow; seatNum++)
                 {

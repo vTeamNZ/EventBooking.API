@@ -83,7 +83,9 @@ namespace EventBooking.API.Controllers
                         Price = tt.Price,
                         Description = tt.Description ?? string.Empty,
                         Color = tt.Color,
-                        SeatRowAssignments = tt.SeatRowAssignments
+                        SeatRowAssignments = tt.SeatRowAssignments,
+                        IsStanding = tt.IsStanding,
+                        StandingCapacity = tt.StandingCapacity
                     }).ToList()
                 };
 
@@ -119,7 +121,9 @@ namespace EventBooking.API.Controllers
                         Price = s.TicketType.Price,
                         Description = s.TicketType.Description ?? string.Empty,
                         Color = s.TicketType.Color,
-                        SeatRowAssignments = s.TicketType.SeatRowAssignments
+                        SeatRowAssignments = s.TicketType.SeatRowAssignments,
+                        IsStanding = s.TicketType.IsStanding,
+                        StandingCapacity = s.TicketType.StandingCapacity
                     } : null,
                     TableId = s.TableId,
                     ReservedUntil = s.ReservedUntil
@@ -308,7 +312,9 @@ namespace EventBooking.API.Controllers
                     Name = !string.IsNullOrEmpty(tt.Name) ? tt.Name : tt.Type,
                     Price = tt.Price,
                     Description = tt.Description ?? "",
-                    Color = tt.Color
+                    Color = tt.Color,
+                    IsStanding = tt.IsStanding,
+                    StandingCapacity = tt.StandingCapacity
                 }).ToList()
             };
 

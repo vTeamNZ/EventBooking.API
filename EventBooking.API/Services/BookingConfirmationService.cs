@@ -162,6 +162,38 @@ namespace EventBooking.API.Services
                     _logger.LogInformation("GENERAL ADMISSION - Processing general admission booking (no specific seats)");
                     selectedSeats = new List<string>(); // Empty list is fine for general admission
                 }
+                else if (eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid)
+                {
+                    // For hybrid events, get selected seats from metadata (may be empty if only standing tickets selected)
+                    session.Metadata.TryGetValue("selectedSeats", out var selectedSeatsString);
+                    
+                    _logger.LogInformation("HYBRID EVENT - Selected seats string from metadata: {SelectedSeats}", selectedSeatsString);
+                    
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(selectedSeatsString))
+                        {
+                            // Split by semicolon since seats are stored using string.Join(";", request.SelectedSeats)
+                            var seatsArray = selectedSeatsString.Split(';', StringSplitOptions.RemoveEmptyEntries);
+                            selectedSeats = seatsArray.ToList();
+                            
+                            _logger.LogInformation("HYBRID EVENT - Successfully parsed {Count} selected seats: {Seats}", 
+                                selectedSeats.Count, string.Join(", ", selectedSeats));
+                        }
+                        else
+                        {
+                            _logger.LogInformation("HYBRID EVENT - No seats selected (standing tickets only)");
+                            selectedSeats = new List<string>(); // Empty list is fine for standing-only booking
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "HYBRID EVENT - Error parsing selected seats: {SeatsString}", selectedSeatsString);
+                        result.Success = false;
+                        result.ErrorMessage = "Error processing hybrid event seat selection";
+                        return result;
+                    }
+                }
                 else
                 {
                     _logger.LogError("Unknown seat selection mode: {Mode}", eventEntity.SeatSelectionMode);
@@ -287,9 +319,11 @@ namespace EventBooking.API.Services
                     // 🎯 ALLOCATED SEATING FIX: For allocated seating events, ticket details contain seat info like "Seat (F7)"
                     // We need to extract the actual ticket type from the selected seats data
                     
-                    if (eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall && selectedSeats.Any())
+                    if ((eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall || 
+                         eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid) && selectedSeats.Any())
                     {
-                        _logger.LogInformation("🎫 ALLOCATED SEATING - Processing ticket creation for {Count} seats: {Seats}", selectedSeats.Count, string.Join(", ", selectedSeats));
+                        var eventModeDisplay = eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid ? "HYBRID EVENT (SEATS)" : "ALLOCATED SEATING";
+                        _logger.LogInformation("🎫 {EventMode} - Processing ticket creation for {Count} seats: {Seats}", eventModeDisplay, selectedSeats.Count, string.Join(", ", selectedSeats));
                         
                         // Get seat information from database to find ticket types
                         var seats = await _context.Seats
@@ -313,8 +347,8 @@ namespace EventBooking.API.Services
                                 var quantity = seatsInGroup.Count;
                                 var seatNumbers = seatsInGroup.Select(s => s.SeatNumber).ToList();
                                 
-                                _logger.LogInformation("🎫 ALLOCATED SEATING - Creating BookingLineItem for TicketType '{Type}' (ID: {Id}), Quantity: {Quantity}, Seats: {Seats}", 
-                                    ticketType.Type, ticketType.Id, quantity, string.Join(", ", seatNumbers));
+                                _logger.LogInformation("🎫 {EventMode} - Creating BookingLineItem for TicketType '{Type}' (ID: {Id}), Quantity: {Quantity}, Seats: {Seats}", 
+                                    eventModeDisplay, ticketType.Type, ticketType.Id, quantity, string.Join(", ", seatNumbers));
 
                                 // Process food items for this ticket type (seat-specific approach)
                                 var processedFoodItems = new List<object>();
@@ -434,9 +468,141 @@ namespace EventBooking.API.Services
                             }
                         }
                     }
-                    else
+                    
+                    // 🎯 HYBRID EVENT STANDING TICKETS: Process standing tickets for hybrid events (in addition to seated tickets processed above)
+                    if (eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid)
                     {
-                        // 🎫 GENERAL ADMISSION - Original logic for general admission events
+                        _logger.LogInformation("🎫 HYBRID EVENT (STANDING) - Processing standing tickets from ticket details");
+                        
+                        foreach (var ticket in ticketDetails)
+                        {
+                            // Try both "Type" and "type" for case-insensitive matching
+                            var typeObj = ticket.TryGetValue("Type", out var typeCapital) ? typeCapital :
+                                        ticket.TryGetValue("type", out var typeLower) ? typeLower : null;
+
+                            if (typeObj != null)
+                            {
+                                var type = typeObj.ToString();
+                                
+                                // Find ticket type by matching Type or Name field
+                                var ticketType = await _context.TicketTypes
+                                    .FirstOrDefaultAsync(tt => tt.EventId == eventId && 
+                                        (tt.Type == type || tt.Name == type));
+
+                                // Try quantity with both cases
+                                var quantityObj = ticket.TryGetValue("Quantity", out var quantityCapital) ? quantityCapital :
+                                                ticket.TryGetValue("quantity", out var quantityLower) ? quantityLower : null;
+
+                                if (ticketType != null && quantityObj != null)
+                                {
+                                    if (int.TryParse(quantityObj.ToString(), out int quantity) && quantity > 0)
+                                    {
+                                        // 🎯 CRITICAL FIX: For hybrid events, only process standing tickets (non-seated ticket types)
+                                        // Check if this ticket type is associated with seats by checking if any seats in the event use this ticket type
+                                        var isSeatedTicketType = await _context.Seats
+                                            .AnyAsync(s => s.EventId == eventId && s.TicketTypeId == ticketType.Id);
+                                        
+                                        if (isSeatedTicketType)
+                                        {
+                                            _logger.LogInformation("🎫 HYBRID EVENT (STANDING) - Skipping seated ticket type '{Type}' (ID: {Id}) - already processed in seats section", 
+                                                ticketType.Type, ticketType.Id);
+                                            continue; // Skip seated ticket types, they were already processed above
+                                        }
+                                        
+                                        _logger.LogInformation("🎫 HYBRID EVENT (STANDING) - Creating BookingLineItem for standing ticket type '{Type}' (ID: {Id}), Quantity: {Quantity}", 
+                                            ticketType.Type, ticketType.Id, quantity);
+
+                                        // Process food items for this ticket (embedded approach)
+                                        var processedFoodItems = new List<object>();
+                                        if (foodDetails != null && foodDetails.Any())
+                                        {
+                                            _logger.LogInformation("🍔 HYBRID STANDING - Embedding {Count} food items into standing ticket", foodDetails.Count);
+                                            
+                                            foreach (var food in foodDetails)
+                                            {
+                                                var nameObj = food.TryGetValue("Name", out var nameCapital) ? nameCapital :
+                                                            food.TryGetValue("name", out var nameLower) ? nameLower : null;
+                                                var foodQuantityObj = food.TryGetValue("Quantity", out var foodQuantityCapital) ? foodQuantityCapital :
+                                                                    food.TryGetValue("quantity", out var foodQuantityLower) ? foodQuantityLower : null;
+                                                var priceObj = food.TryGetValue("UnitPrice", out var unitPriceCapital) ? unitPriceCapital :
+                                                             food.TryGetValue("unitPrice", out var unitPriceLower) ? unitPriceLower :
+                                                             food.TryGetValue("Price", out var priceCapital) ? priceCapital :
+                                                             food.TryGetValue("price", out var priceLower) ? priceLower : null;
+
+                                                if (nameObj != null && foodQuantityObj != null && priceObj != null &&
+                                                    int.TryParse(foodQuantityObj.ToString(), out int foodQuantity) && 
+                                                    decimal.TryParse(priceObj.ToString(), out decimal foodPrice))
+                                                {
+                                                    var foodName = nameObj.ToString();
+                                                    
+                                                    // Find the food item in database for reference
+                                                    var foodItem = await _context.FoodItems
+                                                        .FirstOrDefaultAsync(fi => fi.EventId == eventId && fi.Name == foodName);
+                                                    
+                                                    var processedFood = new
+                                                    {
+                                                        name = foodName,
+                                                        quantity = foodQuantity,
+                                                        unitPrice = foodPrice,
+                                                        totalPrice = foodQuantity * foodPrice,
+                                                        databaseItemId = foodItem?.Id ?? 0,
+                                                        description = foodItem?.Description ?? "",
+                                                        category = "concession"
+                                                    };
+                                                    
+                                                    processedFoodItems.Add(processedFood);
+                                                    _logger.LogInformation("🍔 HYBRID STANDING - Added food '{FoodName}' (Qty: {Quantity}, Price: ${Price}) to standing ticket", 
+                                                        foodName, foodQuantity, foodPrice);
+                                                }
+                                            }
+                                        }
+
+                                        var bookingLineItem = new BookingLineItem
+                                        {
+                                            BookingId = booking.Id,
+                                            ItemType = "Ticket",
+                                            ItemId = ticketType.Id,
+                                            ItemName = ticketType.Name ?? ticketType.Type,
+                                            Quantity = quantity,
+                                            UnitPrice = ticketType.Price,
+                                            TotalPrice = quantity * ticketType.Price,
+                                            SeatDetails = JsonSerializer.Serialize(new 
+                                            {
+                                                ticketTypeId = ticketType.Id,
+                                                type = ticketType.Type,
+                                                color = ticketType.Color,
+                                                eventSeatMode = eventEntity.SeatSelectionMode.ToString()
+                                            }),
+                                            ItemDetails = JsonSerializer.Serialize(new 
+                                            {
+                                                description = ticketType.Description,
+                                                originalTicketData = ticket,
+                                                maxTickets = ticketType.MaxTickets,
+                                                // ✅ SIMPLIFIED: Food items embedded in ticket record
+                                                foodItems = processedFoodItems,
+                                                foodItemsCount = processedFoodItems.Count
+                                            }),
+                                            QRCode = "", // Will be populated by QR service
+                                            Status = "Active",
+                                            CreatedAt = DateTime.UtcNow
+                                        };
+
+                                        bookingLineItems.Add(bookingLineItem);
+                                        _context.BookingLineItems.Add(bookingLineItem);
+                                    }
+                                }
+                                else
+                                {
+                                    _logger.LogWarning("Could not find ticket type for hybrid event {EventId} with type '{Type}'", eventId, type);
+                                }
+                            }
+                        }
+                    }
+                    else if (eventEntity.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
+                    {
+                        // 🎫 GENERAL ADMISSION - Original logic for pure general admission events
+                        _logger.LogInformation("🎫 GENERAL ADMISSION - Processing standing tickets from ticket details");
+                        
                         foreach (var ticket in ticketDetails)
                         {
                             // Try both "Type" and "type" for case-insensitive matching
@@ -544,7 +710,7 @@ namespace EventBooking.API.Services
                             }
                             else
                             {
-                                _logger.LogWarning("Could not find ticket type for event {EventId} with type '{Type}'", eventId, type);
+                                _logger.LogWarning("Could not find ticket type for pure general admission event {EventId} with type '{Type}'", eventId, type);
                             }
                         }
                     }
@@ -557,10 +723,12 @@ namespace EventBooking.API.Services
                 // Handle QR generation based on event type
                 var qrResults = new List<QRGenerationResult>();
                 
-                if (eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall && selectedSeats.Any())
+                if ((eventEntity.SeatSelectionMode == SeatSelectionMode.EventHall || 
+                     eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid) && selectedSeats.Any())
                 {
                     // ALLOCATED SEATING: Update seat status and generate QR per seat
-                    _logger.LogInformation("ALLOCATED SEATING - Processing {Count} specific seats", selectedSeats.Count);
+                    var eventModeDisplay = eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid ? "HYBRID EVENT (SEATS)" : "ALLOCATED SEATING";
+                    _logger.LogInformation("{EventMode} - Processing {Count} specific seats", eventModeDisplay, selectedSeats.Count);
                     
                     // Get all selected seats in one query for efficiency
                     var seats = await _context.Seats
@@ -694,20 +862,39 @@ namespace EventBooking.API.Services
                         }
                     }
                 }
-                else if (eventEntity.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
+                
+                // Handle standing ticket QR generation for GeneralAdmission and Hybrid events
+                if (eventEntity.SeatSelectionMode == SeatSelectionMode.GeneralAdmission ||
+                    eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid)
                 {
-                    // GENERAL ADMISSION: Generate QR tickets based on BookingLineItems quantity
-                    _logger.LogInformation("GENERAL ADMISSION - Processing tickets from BookingLineItems");
+                    // GENERAL ADMISSION & HYBRID STANDING TICKETS: Generate QR tickets based on BookingLineItems quantity
+                    var eventModeDisplay = eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid ? "HYBRID EVENT (STANDING)" : "GENERAL ADMISSION";
+                    _logger.LogInformation("{EventMode} - Processing tickets from BookingLineItems", eventModeDisplay);
                     
                     // 🍕 Extract food order data for enhanced display
                     var foodOrders = ExtractFoodOrdersFromLineItems(bookingLineItems);
                     
-                    var ticketLineItems = bookingLineItems.Where(bli => bli.ItemType == "Ticket").ToList();
+                    // 🎯 CRITICAL FIX: For hybrid events, only process standing tickets (exclude seated tickets already processed above)
+                    List<BookingLineItem> ticketLineItems;
+                    if (eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid)
+                    {
+                        // For hybrid events, exclude tickets that have allocated seats (already processed in seat QR generation)
+                        ticketLineItems = bookingLineItems.Where(bli => 
+                            bli.ItemType == "Ticket" && 
+                            !bli.SeatDetails.Contains("allocatedSeats")).ToList();
+                        
+                        _logger.LogInformation("🎯 HYBRID EVENT - Filtered to {Count} standing ticket line items (excluding seated tickets)", ticketLineItems.Count);
+                    }
+                    else
+                    {
+                        // For pure general admission, process all ticket line items
+                        ticketLineItems = bookingLineItems.Where(bli => bli.ItemType == "Ticket").ToList();
+                    }
                     
                     foreach (var lineItem in ticketLineItems)
                     {
-                        _logger.LogInformation("GENERAL ADMISSION - Generating {Quantity} tickets for {ItemName}", 
-                            lineItem.Quantity, lineItem.ItemName);
+                        _logger.LogInformation("{EventMode} - Generating {Quantity} tickets for {ItemName}", 
+                            eventModeDisplay, lineItem.Quantity, lineItem.ItemName);
                         
                         // Generate QR code for each ticket quantity
                         for (int i = 1; i <= lineItem.Quantity; i++)
@@ -807,6 +994,26 @@ namespace EventBooking.API.Services
                 {
                     // For general admission, list the ticket identifiers
                     result.BookedSeats = qrResults.Select(qr => qr.SeatNumber).ToList();
+                }
+                else if (eventEntity.SeatSelectionMode == SeatSelectionMode.Hybrid)
+                {
+                    // For hybrid events, combine both seated and standing tickets
+                    var allTickets = new List<string>();
+                    
+                    // Add actual seat numbers if any were selected
+                    if (selectedSeats.Any())
+                    {
+                        allTickets.AddRange(selectedSeats);
+                    }
+                    
+                    // Add standing ticket identifiers (those not in selectedSeats)
+                    var standingTickets = qrResults
+                        .Where(qr => !selectedSeats.Contains(qr.SeatNumber))
+                        .Select(qr => qr.SeatNumber)
+                        .ToList();
+                    
+                    allTickets.AddRange(standingTickets);
+                    result.BookedSeats = allTickets;
                 }
                 else
                 {

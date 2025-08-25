@@ -92,32 +92,73 @@ namespace EventBooking.API.Controllers
         [HttpGet("by-title/{title}")]
         public async Task<ActionResult<Event>> GetEventByTitle(string title)
         {
-            // First try exact match
-            var exactMatch = await _context.Events
+            // Get all events and check slug generation client-side
+            var allEvents = await _context.Events
                 .Include(e => e.Venue)
                 .Include(e => e.Organizer)
                 .Include(e => e.TicketTypes)
-                .FirstOrDefaultAsync(e => e.Title.ToLower().Replace(" ", "-").Replace("'", "").Replace("\"", "").Replace("&", "and") == title.ToLower());
+                .ToListAsync();
 
-            if (exactMatch != null)
+            // Find event where generated slug matches the requested title
+            foreach (var evt in allEvents)
             {
-                return exactMatch;
+                var generatedSlug = GenerateSlugFromTitle(evt.Title);
+                if (generatedSlug.Equals(title, StringComparison.OrdinalIgnoreCase))
+                {
+                    return evt;
+                }
             }
 
-            // Fallback to contains search for partial matches
-            var partialMatch = await _context.Events
-                .Include(e => e.Venue)
-                .Include(e => e.Organizer)
-                .Include(e => e.TicketTypes)
-                .Where(e => e.Title.Contains(title))
-                .FirstOrDefaultAsync();
+            return NotFound();
+        }
 
-            if (partialMatch == null)
+        /// <summary>
+        /// Generate slug from title - must match frontend slugUtils.ts logic exactly
+        /// </summary>
+        private string GenerateSlugFromTitle(string title)
+        {
+            if (string.IsNullOrEmpty(title))
             {
-                return NotFound();
+                return string.Empty;
             }
 
-            return partialMatch;
+            return title
+                .ToLower()
+                .Trim()
+                .Replace(" ", "-")                    // Replace spaces with -
+                .Replace("'", "")                     // Remove apostrophes
+                .Replace("\"", "")                    // Remove quotes
+                .Replace("&", "and")                  // Replace & with and
+                .Replace(",", "")                     // Remove commas
+                .Replace(".", "")                     // Remove periods
+                .Replace("!", "")                     // Remove exclamation marks
+                .Replace("?", "")                     // Remove question marks
+                .Replace("(", "")                     // Remove parentheses
+                .Replace(")", "")                     // Remove parentheses
+                .Replace("[", "")                     // Remove brackets
+                .Replace("]", "")                     // Remove brackets
+                .Replace("{", "")                     // Remove braces
+                .Replace("}", "")                     // Remove braces
+                .Replace(":", "")                     // Remove colons
+                .Replace(";", "")                     // Remove semicolons
+                .Replace("/", "")                     // Remove slashes
+                .Replace("\\", "")                    // Remove backslashes
+                .Replace("|", "")                     // Remove pipes
+                .Replace("*", "")                     // Remove asterisks
+                .Replace("+", "")                     // Remove plus signs
+                .Replace("=", "")                     // Remove equals signs
+                .Replace("@", "")                     // Remove at signs
+                .Replace("#", "")                     // Remove hash signs
+                .Replace("$", "")                     // Remove dollar signs
+                .Replace("%", "")                     // Remove percent signs
+                .Replace("^", "")                     // Remove carets
+                .Replace("`", "")                     // Remove backticks
+                .Replace("~", "")                     // Remove tildes
+                .Replace("<", "")                     // Remove less than
+                .Replace(">", "")                     // Remove greater than
+                .Replace("--", "-")                   // Replace double hyphens
+                .Replace("---", "-")                  // Replace triple hyphens
+                .Trim('-');                           // Remove leading/trailing hyphens
         }
 
         [Authorize(Roles = "Organizer")]
@@ -212,17 +253,19 @@ namespace EventBooking.API.Controllers
                 _context.Events.Add(newEvent);
                 await _context.SaveChangesAsync();
 
-                // Automatically create seats if we have a venue and are using EventHall mode
+                // Automatically create seats if we have a venue and are using EventHall or Hybrid mode
                 int seatsCreated = 0;
                 
                 // Log the event data to debug
                 logger.LogInformation("Event created with SeatSelectionMode: {SeatSelectionMode} (value: {ModeValue}), VenueId: {VenueId}", 
                     newEvent.SeatSelectionMode, (int)newEvent.SeatSelectionMode, newEvent.VenueId);
                 
-                if (newEvent.VenueId.HasValue && newEvent.SeatSelectionMode == SeatSelectionMode.EventHall)
+                if (newEvent.VenueId.HasValue && 
+                    (newEvent.SeatSelectionMode == SeatSelectionMode.EventHall || 
+                     newEvent.SeatSelectionMode == SeatSelectionMode.Hybrid))
                 {
-                    logger.LogInformation("Creating seats for event {EventId} with venue {VenueId}", 
-                        newEvent.Id, newEvent.VenueId.Value);
+                    logger.LogInformation("Creating seats for event {EventId} with venue {VenueId} in {Mode} mode", 
+                        newEvent.Id, newEvent.VenueId.Value, newEvent.SeatSelectionMode);
                     seatsCreated = await _seatCreationService.CreateSeatsForEventAsync(newEvent.Id, newEvent.VenueId.Value);
                     logger.LogInformation("Created {SeatsCount} seats for event {EventId}", seatsCreated, newEvent.Id);
                 }

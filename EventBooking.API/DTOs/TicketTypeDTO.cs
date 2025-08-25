@@ -21,6 +21,10 @@ namespace EventBooking.API.DTOs
         // Maximum number of tickets available for this type (for General Admission events)
         public int? MaxTickets { get; set; }
 
+        // Standing ticket configuration (for Hybrid events)
+        public bool IsStanding { get; set; } = false;
+        public int? StandingCapacity { get; set; }
+
         public List<SeatRowAssignmentDTO> SeatRows { get; set; } = new List<SeatRowAssignmentDTO>();
     }
 

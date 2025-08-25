@@ -48,7 +48,15 @@ namespace EventBooking.API.Services
             var ticketType = await _context.TicketTypes
                 .FirstOrDefaultAsync(tt => tt.Id == ticketTypeId);
 
-            if (ticketType?.MaxTickets == null)
+            if (ticketType == null)
+            {
+                _logger.LogWarning("🎯 NEW ARCHITECTURE - GetTicketsAvailableAsync: TicketTypeId={TicketTypeId} not found", 
+                    ticketTypeId);
+                return 0;
+            }
+
+            // Use MaxTickets for capacity (applies to both seated and standing tickets)
+            if (ticketType.MaxTickets == null)
             {
                 _logger.LogInformation("🎯 NEW ARCHITECTURE - GetTicketsAvailableAsync: TicketTypeId={TicketTypeId}, MaxTickets=null, returning -1 (unlimited)", 
                     ticketTypeId);

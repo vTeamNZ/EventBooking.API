@@ -34,6 +34,10 @@ namespace EventBooking.API.Models
         // Maximum number of tickets available for this type (for General Admission events)
         public int? MaxTickets { get; set; }
 
+        // Standing ticket configuration (for Hybrid events)
+        public bool IsStanding { get; set; } = false;
+        public int? StandingCapacity { get; set; }
+
         // Navigation properties
         public Event? Event { get; set; }
         public ICollection<Seat> Seats { get; set; } = new List<Seat>();
