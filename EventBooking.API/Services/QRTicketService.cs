@@ -483,7 +483,26 @@ namespace EventBooking.API.Services
                 seatCell.Padding = 8f;
                 seatCell.HorizontalAlignment = Element.ALIGN_CENTER;
                 var seatPara = new Paragraph();
-                seatPara.Add(new Chunk("SEAT\n", labelFont));
+                
+                // Check if this is a General Admission ticket 
+                // Two patterns: booking-based (B123-1) or ticket-type based (Adult-1, Student-2)
+                var seatLabel = "SEAT";
+                if (!string.IsNullOrEmpty(seatNumber))
+                {
+                    if (seatNumber.StartsWith("B") && seatNumber.Contains("-"))
+                    {
+                        // This is a booking-based identifier for General Admission (organizer booking)
+                        seatLabel = "TICKET";
+                    }
+                    else if (seatNumber.Contains("-") && !char.IsDigit(seatNumber[0]))
+                    {
+                        // This is a ticket-type based identifier for General Admission (user purchase)
+                        // Examples: Adult-1, Student-2, Child-1, VIP-3
+                        seatLabel = "TICKET";
+                    }
+                }
+                
+                seatPara.Add(new Chunk($"{seatLabel}\n", labelFont));
                 seatPara.Add(new Chunk(seatNumber ?? "GA", valueFont));
                 seatPara.Alignment = Element.ALIGN_CENTER;
                 seatCell.AddElement(seatPara);
