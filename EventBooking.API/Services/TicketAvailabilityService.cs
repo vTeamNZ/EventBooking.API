@@ -25,17 +25,43 @@ namespace EventBooking.API.Services
 
         /// <summary>
         /// 🎯 NEW ARCHITECTURE - Get the number of tickets sold for a specific ticket type using BookingLineItems
+        /// INCLUDES organizer tickets (ItemId = 0) for the same event to ensure accurate availability
         /// </summary>
         public async Task<int> GetTicketsSoldAsync(int ticketTypeId)
         {
-            var totalSold = await _context.BookingLineItems
+            // Get regular ticket sales for this specific ticket type
+            var regularTicketsSold = await _context.BookingLineItems
                 .Where(bli => bli.ItemId == ticketTypeId && 
                             bli.ItemType == "Ticket" && 
                             bli.Status == "Active")
                 .SumAsync(bli => bli.Quantity);
+
+            // Get the event ID for this ticket type to find organizer tickets for the same event
+            var eventId = await _context.TicketTypes
+                .Where(tt => tt.Id == ticketTypeId)
+                .Select(tt => tt.EventId)
+                .FirstOrDefaultAsync();
+
+            if (eventId == 0)
+            {
+                _logger.LogWarning("🎯 ORGANIZER FIX - GetTicketsSoldAsync: TicketTypeId={TicketTypeId} has no valid EventId", 
+                    ticketTypeId);
+                return regularTicketsSold;
+            }
+
+            // Get organizer tickets (ItemId = 0) for the same event
+            var organizerTicketsForEvent = await _context.BookingLineItems
+                .Join(_context.Bookings, bli => bli.BookingId, b => b.Id, (bli, b) => new { bli, b })
+                .Where(x => x.bli.ItemId == 0 && 
+                           x.bli.ItemType == "Ticket" && 
+                           x.bli.Status == "Active" &&
+                           x.b.EventId == eventId)
+                .SumAsync(x => x.bli.Quantity);
+
+            var totalSold = regularTicketsSold + organizerTicketsForEvent;
             
-            _logger.LogInformation("🎯 NEW ARCHITECTURE - GetTicketsSoldAsync: TicketTypeId={TicketTypeId}, TotalSold={TotalSold}", 
-                ticketTypeId, totalSold);
+            _logger.LogInformation("🎯 ORGANIZER FIX - GetTicketsSoldAsync: TicketTypeId={TicketTypeId}, EventId={EventId}, RegularSold={RegularSold}, OrganizerSold={OrganizerSold}, TotalSold={TotalSold}", 
+                ticketTypeId, eventId, regularTicketsSold, organizerTicketsForEvent, totalSold);
             
             return totalSold;
         }
