@@ -470,8 +470,13 @@ namespace EventBooking.API.Services
                 namePara.SpacingAfter = 8f;
                 rightCell.AddElement(namePara);
 
-                // Ticket Type Badge (New - Prominent Display)
-                if (!string.IsNullOrEmpty(ticketType))
+                // Ticket Type Badge (New - Prominent Display) - Only for Organizer-generated tickets
+                // Check if this is an organizer-generated ticket (booking-based identifier starting with "B")
+                bool isOrganizerGeneratedTicket = !string.IsNullOrEmpty(seatNumber) && 
+                                                 seatNumber.StartsWith("B") && 
+                                                 seatNumber.Contains("-");
+                
+                if (!string.IsNullOrEmpty(ticketType) && isOrganizerGeneratedTicket)
                 {
                     var ticketTypeBadgeTable = new PdfPTable(1);
                     ticketTypeBadgeTable.WidthPercentage = 100;
@@ -507,7 +512,7 @@ namespace EventBooking.API.Services
                 var seatPara = new Paragraph();
                 
                 // Check if this is a General Admission ticket 
-                // Two patterns: booking-based (B123-1) or ticket-type based (Adult-1, Student-2)
+                // Multiple patterns: booking-based (B123-1), ticket-type based (Adult-1), or parentheses format ((Early B.)-1)
                 var seatLabel = "SEAT";
                 if (!string.IsNullOrEmpty(seatNumber))
                 {
@@ -519,7 +524,17 @@ namespace EventBooking.API.Services
                     else if (seatNumber.Contains("-") && !char.IsDigit(seatNumber[0]))
                     {
                         // This is a ticket-type based identifier for General Admission (user purchase)
-                        // Examples: Adult-1, Student-2, Child-1, VIP-3
+                        // Examples: Adult-1, Student-2, Child-1, VIP-3, (Early B.)-1, (4-12 years)-2
+                        seatLabel = "TICKET";
+                    }
+                    else if (seatNumber.Length <= 3 && char.IsLetter(seatNumber[0]) && char.IsDigit(seatNumber[seatNumber.Length - 1]))
+                    {
+                        // This is allocated seating (e.g., F9, G10, A1) - keep as "SEAT"
+                        seatLabel = "SEAT";
+                    }
+                    else if (seatNumber.Contains("-"))
+                    {
+                        // Any other pattern with dash should be General Admission ticket
                         seatLabel = "TICKET";
                     }
                 }
