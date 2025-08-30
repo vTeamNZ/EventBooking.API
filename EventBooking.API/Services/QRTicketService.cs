@@ -467,8 +467,30 @@ namespace EventBooking.API.Services
                 var nameFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 16, new BaseColor(45, 55, 72));
                 var namePara = new Paragraph((firstName ?? "VALUED GUEST").ToUpper(), nameFont);
                 namePara.Alignment = Element.ALIGN_CENTER;
-                namePara.SpacingAfter = 10f;
+                namePara.SpacingAfter = 8f;
                 rightCell.AddElement(namePara);
+
+                // Ticket Type Badge (New - Prominent Display)
+                if (!string.IsNullOrEmpty(ticketType))
+                {
+                    var ticketTypeBadgeTable = new PdfPTable(1);
+                    ticketTypeBadgeTable.WidthPercentage = 100;
+                    
+                    var ticketTypeBadgeFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 12, BaseColor.WHITE);
+                    var ticketTypeBadgePara = new Paragraph(ticketType.ToUpper(), ticketTypeBadgeFont);
+                    ticketTypeBadgePara.Alignment = Element.ALIGN_CENTER;
+                    
+                    var ticketTypeBadgeCell = new PdfPCell(ticketTypeBadgePara);
+                    ticketTypeBadgeCell.BackgroundColor = new BaseColor(78, 205, 196); // Teal background
+                    ticketTypeBadgeCell.BorderWidth = 2f;
+                    ticketTypeBadgeCell.BorderColor = new BaseColor(255, 107, 107); // Coral border
+                    ticketTypeBadgeCell.Padding = 8f;
+                    ticketTypeBadgeCell.HorizontalAlignment = Element.ALIGN_CENTER;
+                    
+                    ticketTypeBadgeTable.AddCell(ticketTypeBadgeCell);
+                    ticketTypeBadgeTable.SpacingAfter = 10f;
+                    rightCell.AddElement(ticketTypeBadgeTable);
+                }
 
                 // Ticket Information (Compact) - 2x2 Grid
                 var ticketInfoTable = new PdfPTable(2);
