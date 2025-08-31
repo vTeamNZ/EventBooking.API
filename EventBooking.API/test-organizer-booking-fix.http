@@ -1,0 +1,47 @@
+### Test the Fixed Organizer Booking System
+### This shows how the new system would work with proper ticket type tracking
+
+POST https://kiwilanka.co.nz/Bookings/organizer-direct
+Content-Type: application/json
+Authorization: Bearer YOUR_ORGANIZER_JWT_TOKEN
+
+{
+  "eventId": 33,
+  "firstName": "Test",
+  "lastName": "Buyer", 
+  "buyerEmail": "test@example.com",
+  "mobile": "+64123456789",
+  "seatNumbers": [],  // Optional - for general admission can be empty
+  "ticketRequests": [
+    {
+      "ticketTypeId": 75,  // Standing (16+ years) (Early B.) - $75.00
+      "quantity": 2,
+      "ticketTypeName": "Standing (16+ years) (Early B.)"
+    },
+    {
+      "ticketTypeId": 82,  // Kids Corner (4-12 years) - $10.00  
+      "quantity": 1,
+      "ticketTypeName": "Kids Corner (4-12 years)"
+    }
+  ]
+}
+
+### This request would create:
+### - 3 BookingLineItems total
+### - 2 with ItemId=75 (Standing tickets)
+### - 1 with ItemId=82 (Kids ticket)
+### - Each with proper ticket type tracking for availability calculation
+
+### Expected Response:
+# {
+#   "bookingId": 999,
+#   "paymentGUID": "ORG_xxxxx",
+#   "message": "Organizer booking created successfully with 3 tickets across 2 ticket types...",
+#   "eventName": "WAYO",
+#   "seatNumbers": ["Standing (16+ years) (Early B.)-1", "Standing (16+ years) (Early B.)-2", "Kids Corner (4-12 years)-3"],
+#   "ticketDetails": [...],
+#   "ticketBreakdown": [
+#     { "ticketTypeId": 75, "ticketTypeName": "Standing (16+ years) (Early B.)", "quantity": 2 },
+#     { "ticketTypeId": 82, "ticketTypeName": "Kids Corner (4-12 years)", "quantity": 1 }
+#   ]
+# }

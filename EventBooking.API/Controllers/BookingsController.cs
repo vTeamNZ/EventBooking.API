@@ -348,22 +348,72 @@ namespace EventBooking.API.Controllers
 
         // POST: api/Bookings/organizer-direct
         [HttpPost("organizer-direct")]
-        // [Authorize(Roles = "Organizer")] // Temporarily disabled for testing
+        [Authorize(Roles = "Organizer")] // Re-enabled authorization for production security
         public async Task<ActionResult<OrganizerBookingResponse>> CreateOrganizerDirectBooking([FromBody] OrganizerBookingRequest request)
         {
             try
             {
-                _logger.LogInformation("Creating organizer direct booking for event {EventId} by {User}", request.EventId, User.Identity?.Name);
+                _logger.LogInformation("🎯 ORGANIZER BOOKING - Starting validation for event {EventId} by {User}", request?.EventId ?? 0, User.Identity?.Name);
+                
+                // Debug log the full request
+                _logger.LogInformation("🎯 REQUEST DEBUG - EventId: {EventId}, BuyerEmail: {Email}, FirstName: {FirstName}, TicketRequestsCount: {Count}", 
+                    request?.EventId, request?.BuyerEmail, request?.FirstName, request?.TicketRequests?.Count ?? 0);
+
+                // Validate request object
+                if (request == null)
+                {
+                    _logger.LogWarning("🎯 VALIDATION FAILED - Request object is null");
+                    return BadRequest("Request data is required");
+                }
 
                 // Validate request
                 if (string.IsNullOrWhiteSpace(request.BuyerEmail))
                 {
+                    _logger.LogWarning("🎯 VALIDATION FAILED - BuyerEmail is empty: '{Email}'", request.BuyerEmail);
                     return BadRequest("BuyerEmail is required and cannot be empty");
                 }
 
                 if (string.IsNullOrWhiteSpace(request.FirstName))
                 {
+                    _logger.LogWarning("🎯 VALIDATION FAILED - FirstName is empty: '{FirstName}'", request.FirstName);
                     return BadRequest("FirstName is required and cannot be empty");
+                }
+
+                // Validate ticket requests
+                if (request.TicketRequests == null || !request.TicketRequests.Any())
+                {
+                    _logger.LogWarning("🎯 VALIDATION FAILED - No ticket requests provided. TicketRequests is null: {IsNull}, Count: {Count}", 
+                        request.TicketRequests == null, request.TicketRequests?.Count ?? 0);
+                    return BadRequest("At least one ticket type must be specified");
+                }
+
+                // Validate that all ticket types exist for this event
+                var ticketTypeIds = request.TicketRequests.Select(tr => tr.TicketTypeId).ToList();
+                _logger.LogInformation("🎯 TICKET VALIDATION - Checking ticket types {TicketTypeIds} for event {EventId}", 
+                    string.Join(",", ticketTypeIds), request.EventId);
+                
+                var validTicketTypes = await _context.TicketTypes
+                    .Where(tt => tt.EventId == request.EventId && ticketTypeIds.Contains(tt.Id))
+                    .ToListAsync();
+
+                _logger.LogInformation("🎯 TICKET VALIDATION - Found {ValidCount} out of {RequestedCount} ticket types. Valid IDs: [{ValidIds}]", 
+                    validTicketTypes.Count, ticketTypeIds.Count, string.Join(",", validTicketTypes.Select(tt => tt.Id)));
+
+                if (validTicketTypes.Count != ticketTypeIds.Count)
+                {
+                    var invalidIds = ticketTypeIds.Except(validTicketTypes.Select(tt => tt.Id)).ToList();
+                    _logger.LogWarning("🎯 VALIDATION FAILED - Invalid ticket type IDs: [{InvalidIds}] for event {EventId}", 
+                        string.Join(",", invalidIds), request.EventId);
+                    return BadRequest($"One or more ticket types are invalid for this event. Invalid IDs: {string.Join(",", invalidIds)}");
+                }
+
+                // Calculate total tickets requested
+                var totalTicketsRequested = request.TicketRequests.Sum(tr => tr.Quantity);
+                
+                // For backward compatibility, if seat numbers are provided, ensure they match ticket quantity
+                if (request.SeatNumbers.Any() && request.SeatNumbers.Count != totalTicketsRequested)
+                {
+                    return BadRequest($"Seat numbers count ({request.SeatNumbers.Count}) must match total ticket quantity ({totalTicketsRequested})");
                 }
 
                 // Get the event with organizer information
@@ -403,52 +453,95 @@ namespace EventBooking.API.Controllers
                 _context.Bookings.Add(booking);
                 await _context.SaveChangesAsync(); // Save to get the booking ID
 
-                // Mark the seats as booked in the Seats table
-                var seats = await _context.Seats
-                    .Where(s => s.EventId == request.EventId && request.SeatNumbers.Contains(s.SeatNumber))
-                    .ToListAsync();
-
-                foreach (var seat in seats)
+                // Mark the seats as booked in the Seats table (if seat numbers provided)
+                if (request.SeatNumbers.Any())
                 {
-                    seat.Status = SeatStatus.Booked;
-                    seat.ReservedBy = request.BuyerEmail;
-                    seat.ReservedUntil = DateTime.UtcNow.AddDays(365); // Long expiry for organizer bookings
-                }
+                    var seats = await _context.Seats
+                        .Where(s => s.EventId == request.EventId && request.SeatNumbers.Contains(s.SeatNumber))
+                        .ToListAsync();
 
-                await _context.SaveChangesAsync(); // Save seat updates
-
-                // Create booking line items for each seat
-                var lineItems = new List<BookingLineItem>();
-                var ticketCounter = 1;
-                foreach (var seatNumber in request.SeatNumbers)
-                {
-                    // Check if this is a hardcoded general admission seat (A1, A2, A3, etc.)
-                    // If so, replace with booking-based identifier
-                    var actualSeatNumber = seatNumber;
-                    if (seatNumber.StartsWith("A") && seatNumber.Length <= 3 && 
-                        int.TryParse(seatNumber.Substring(1), out var sequentialNumber))
+                    foreach (var seat in seats)
                     {
-                        // This appears to be a hardcoded general admission seat - use booking-based identifier
-                        actualSeatNumber = $"B{booking.Id}-{ticketCounter}";
+                        seat.Status = SeatStatus.Booked;
+                        seat.ReservedBy = request.BuyerEmail;
+                        seat.ReservedUntil = DateTime.UtcNow.AddDays(365); // Long expiry for organizer bookings
                     }
 
-                    var lineItem = new BookingLineItem
+                    await _context.SaveChangesAsync(); // Save seat updates
+                }
+
+                // Update booking metadata to include ticket type breakdown
+                booking.Metadata = JsonSerializer.Serialize(new { 
+                    OrganizerBooking = true,
+                    CreatedBy = User.Identity?.Name,
+                    TicketBreakdown = request.TicketRequests.Select(tr => new {
+                        TicketTypeId = tr.TicketTypeId,
+                        TicketTypeName = tr.TicketTypeName,
+                        Quantity = tr.Quantity
+                    }).ToList(),
+                    SeatNumbers = request.SeatNumbers 
+                });
+
+                // Create booking line items for each ticket type requested
+                var lineItems = new List<BookingLineItem>();
+                var ticketCounter = 1;
+                var seatIndex = 0;
+
+                foreach (var ticketRequest in request.TicketRequests)
+                {
+                    var ticketType = validTicketTypes.First(tt => tt.Id == ticketRequest.TicketTypeId);
+                    
+                    for (int i = 0; i < ticketRequest.Quantity; i++)
                     {
-                        BookingId = booking.Id,
-                        ItemType = "Ticket",
-                        ItemId = 0, // Dummy value for organizer bookings
-                        ItemName = $"Organizer Ticket - {actualSeatNumber}",
-                        Quantity = 1,
-                        UnitPrice = 0,
-                        TotalPrice = 0,
-                        SeatDetails = actualSeatNumber,
-                        ItemDetails = $"Seat {actualSeatNumber} - {eventItem.Title}",
-                        QRCode = "", // Will be generated by frontend
-                        Status = "Active",
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    lineItems.Add(lineItem);
-                    ticketCounter++;
+                        // Determine seat number
+                        string actualSeatNumber;
+                        if (request.SeatNumbers.Any() && seatIndex < request.SeatNumbers.Count)
+                        {
+                            var seatNumber = request.SeatNumbers[seatIndex];
+                            // Check if this is a hardcoded general admission seat (A1, A2, A3, etc.)
+                            if (seatNumber.StartsWith("A") && seatNumber.Length <= 3 && 
+                                int.TryParse(seatNumber.Substring(1), out var sequentialNumber))
+                            {
+                                // Use booking-based identifier with ticket type prefix
+                                actualSeatNumber = $"{ticketType.Type}-{ticketCounter}";
+                            }
+                            else
+                            {
+                                actualSeatNumber = seatNumber;
+                            }
+                            seatIndex++;
+                        }
+                        else
+                        {
+                            // Generate ticket-type based identifier
+                            actualSeatNumber = $"{ticketType.Type}-{ticketCounter}";
+                        }
+
+                        var lineItem = new BookingLineItem
+                        {
+                            BookingId = booking.Id,
+                            ItemType = "Ticket",
+                            ItemId = ticketType.Id, // 🎯 FIX: Use actual ticket type ID instead of 0
+                            ItemName = $"{ticketType.Name ?? ticketType.Type} - {actualSeatNumber}",
+                            Quantity = 1,
+                            UnitPrice = 0, // Organizer tickets are free
+                            TotalPrice = 0,
+                            SeatDetails = JsonSerializer.Serialize(new 
+                            {
+                                seatNumber = actualSeatNumber,
+                                ticketTypeId = ticketType.Id,
+                                ticketTypeName = ticketType.Name ?? ticketType.Type,
+                                ticketTypeColor = ticketType.Color,
+                                organizerBooking = true
+                            }),
+                            ItemDetails = $"Organizer issued {ticketType.Name ?? ticketType.Type} for {eventItem.Title}",
+                            QRCode = "", // Will be generated by frontend
+                            Status = "Active",
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        lineItems.Add(lineItem);
+                        ticketCounter++;
+                    }
                 }
 
                 _context.BookingLineItems.AddRange(lineItems);
@@ -465,11 +558,26 @@ namespace EventBooking.API.Controllers
                 {
                     try
                     {
+                        // Parse the SeatDetails JSON to extract proper information
+                        string displaySeatNumber = "General";
+                        string displayTicketType = "Organizer";
+                        
+                        try
+                        {
+                            var seatDetailsObj = JsonSerializer.Deserialize<JsonElement>(lineItem.SeatDetails);
+                            displaySeatNumber = seatDetailsObj.GetProperty("seatNumber").GetString() ?? "General";
+                            displayTicketType = seatDetailsObj.GetProperty("ticketTypeName").GetString() ?? "Organizer";
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to parse SeatDetails JSON for booking {BookingId}, using defaults", booking.Id);
+                        }
+
                         // Generate QR code for this seat
                         var qrCode = _qrTicketService.GenerateQrCode(
                             eventItem.Id.ToString(),
                             eventItem.Title,
-                            lineItem.SeatDetails,
+                            displaySeatNumber, // Use parsed seat number instead of JSON
                             request.FirstName,
                             paymentGuid
                         );
@@ -478,13 +586,14 @@ namespace EventBooking.API.Controllers
                         var ticketPdf = await _qrTicketService.GenerateProfessionalConcertTicketAsync(
                             eventItem.Id.ToString(),
                             eventItem.Title,
-                            lineItem.SeatDetails,
+                            displaySeatNumber, // Use parsed seat number instead of JSON
                             request.FirstName,
                             qrCode,
                             new List<FoodOrderInfo>(), // Empty food orders for organizer bookings
                             fullImageUrl, // Add event flyer with full URL
-                            "Organizer", // Specify ticket type as "Organizer"
-                            paymentGuid // Use payment GUID as booking reference
+                            displayTicketType, // Use parsed ticket type name instead of "Organizer"
+                            $"B{booking.Id}", // Include booking ID in the ticket reference
+                            true // ✅ This IS an organizer booking - show "ORGANIZER GUEST"
                         );
 
                         // Save ticket locally and get the path
@@ -494,7 +603,7 @@ namespace EventBooking.API.Controllers
                             eventItem.Title,
                             request.FirstName,
                             paymentGuid,
-                            lineItem.SeatDetails
+                            displaySeatNumber // Use parsed seat number instead of JSON
                         );
 
                         // Update the line item with QR identifier (not full base64 image)
@@ -503,7 +612,7 @@ namespace EventBooking.API.Controllers
                         
                         ticketDetails.Add(new TicketDetail
                         {
-                            SeatNumber = lineItem.SeatDetails,
+                            SeatNumber = displaySeatNumber, // Use parsed seat number instead of JSON
                             TicketPath = ticketPath,
                             LineItemId = lineItem.Id
                         });
@@ -543,11 +652,23 @@ namespace EventBooking.API.Controllers
                                 var ticketPdf = await System.IO.File.ReadAllBytesAsync(ticketPath);
                                 var lineItem = lineItems[i];
                                 
+                                // Parse the SeatDetails JSON to get the display seat number
+                                string displaySeatNumber = "General";
+                                try
+                                {
+                                    var seatDetailsObj = JsonSerializer.Deserialize<JsonElement>(lineItem.SeatDetails);
+                                    displaySeatNumber = seatDetailsObj.GetProperty("seatNumber").GetString() ?? "General";
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "Failed to parse SeatDetails JSON for email sending, using default");
+                                }
+                                
                                 // Generate QR code for this specific ticket
                                 var qrCodeImage = _qrTicketService.GenerateQrCode(
                                     eventItem.Id.ToString(),
                                     eventItem.Title,
-                                    lineItem.SeatDetails,
+                                    displaySeatNumber, // Use parsed seat number instead of JSON
                                     request.FirstName,
                                     paymentGuid
                                 );
@@ -566,12 +687,12 @@ namespace EventBooking.API.Controllers
                                 if (emailSent)
                                 {
                                     emailsSent++;
-                                    _logger.LogInformation("Successfully sent ticket email for booking {BookingId} seat {SeatNumber} to {Email}", booking.Id, lineItem.SeatDetails, request.BuyerEmail);
+                                    _logger.LogInformation("Successfully sent ticket email for booking {BookingId} seat {SeatNumber} to {Email}", booking.Id, displaySeatNumber, request.BuyerEmail);
                                 }
                                 else
                                 {
                                     emailsFailed++;
-                                    _logger.LogWarning("Failed to send ticket email for booking {BookingId} seat {SeatNumber} to {Email}", booking.Id, lineItem.SeatDetails, request.BuyerEmail);
+                                    _logger.LogWarning("Failed to send ticket email for booking {BookingId} seat {SeatNumber} to {Email}", booking.Id, displaySeatNumber, request.BuyerEmail);
                                 }
                             }
                             else
@@ -610,6 +731,18 @@ namespace EventBooking.API.Controllers
                                     var ticketPdf = await System.IO.File.ReadAllBytesAsync(ticketPath);
                                     var lineItem = lineItems[i];
                                     
+                                    // Parse the SeatDetails JSON to get the display seat number
+                                    string displaySeatNumber = "General";
+                                    try
+                                    {
+                                        var seatDetailsObj = JsonSerializer.Deserialize<JsonElement>(lineItem.SeatDetails);
+                                        displaySeatNumber = seatDetailsObj.GetProperty("seatNumber").GetString() ?? "General";
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        _logger.LogWarning(ex, "Failed to parse SeatDetails JSON for organizer notification, using default");
+                                    }
+                                    
                                     var organizerEmailSent = await _emailService.SendOrganizerNotificationAsync(
                                         eventItem.Organizer.ContactEmail,
                                         eventItem.Title,
@@ -623,12 +756,12 @@ namespace EventBooking.API.Controllers
                                     if (organizerEmailSent)
                                     {
                                         emailsSent++;
-                                        _logger.LogInformation("Successfully sent organizer notification for booking {BookingId} seat {SeatNumber} to {OrganizerEmail}", booking.Id, lineItem.SeatDetails, eventItem.Organizer.ContactEmail);
+                                        _logger.LogInformation("Successfully sent organizer notification for booking {BookingId} seat {SeatNumber} to {OrganizerEmail}", booking.Id, displaySeatNumber, eventItem.Organizer.ContactEmail);
                                     }
                                     else
                                     {
                                         emailsFailed++;
-                                        _logger.LogWarning("Failed to send organizer notification for booking {BookingId} seat {SeatNumber} to {OrganizerEmail}", booking.Id, lineItem.SeatDetails, eventItem.Organizer.ContactEmail);
+                                        _logger.LogWarning("Failed to send organizer notification for booking {BookingId} seat {SeatNumber} to {OrganizerEmail}", booking.Id, displaySeatNumber, eventItem.Organizer.ContactEmail);
                                     }
                                 }
                                 else
@@ -659,10 +792,26 @@ namespace EventBooking.API.Controllers
                 {
                     BookingId = booking.Id,
                     PaymentGUID = paymentGuid,
-                    Message = "Organizer booking created successfully with QR codes. Email sent to buyer and organizer notification sent.",
+                    Message = $"Organizer booking created successfully with {lineItems.Count} tickets across {request.TicketRequests.Count} ticket types. Email sent to buyer and organizer notification sent.",
                     EventName = eventItem.Title,
-                    SeatNumbers = lineItems.Select(li => li.SeatDetails).ToList(), // Use actual generated seat numbers
-                    TicketDetails = ticketDetails
+                    SeatNumbers = lineItems.Select(li => {
+                        // Extract seat number from SeatDetails JSON
+                        try
+                        {
+                            var seatDetailsObj = JsonSerializer.Deserialize<JsonElement>(li.SeatDetails);
+                            return seatDetailsObj.GetProperty("seatNumber").GetString() ?? li.SeatDetails;
+                        }
+                        catch
+                        {
+                            return li.SeatDetails; // Fallback to raw value
+                        }
+                    }).ToList(),
+                    TicketDetails = ticketDetails,
+                    TicketBreakdown = request.TicketRequests.Select(tr => new {
+                        TicketTypeId = tr.TicketTypeId,
+                        TicketTypeName = tr.TicketTypeName,
+                        Quantity = tr.Quantity
+                    }).ToList()
                 });
             }
             catch (Exception ex)
@@ -772,6 +921,14 @@ namespace EventBooking.API.Controllers
         public string BuyerEmail { get; set; } = string.Empty;
         public string? Mobile { get; set; }
         public List<string> SeatNumbers { get; set; } = new List<string>();
+        public List<OrganizerTicketRequest> TicketRequests { get; set; } = new List<OrganizerTicketRequest>();
+    }
+
+    public class OrganizerTicketRequest
+    {
+        public int TicketTypeId { get; set; }
+        public int Quantity { get; set; }
+        public string? TicketTypeName { get; set; } // For display purposes
     }
 
     public class OrganizerBookingResponse
@@ -782,6 +939,7 @@ namespace EventBooking.API.Controllers
         public string EventName { get; set; } = string.Empty;
         public List<string> SeatNumbers { get; set; } = new List<string>();
         public List<TicketDetail> TicketDetails { get; set; } = new List<TicketDetail>();
+        public object TicketBreakdown { get; set; } = new();
     }
 
     public class TicketDetail

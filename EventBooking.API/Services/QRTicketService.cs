@@ -71,7 +71,8 @@ namespace EventBooking.API.Services
                     request.FoodOrders, // ✅ Pass food orders to PDF generation
                     request.EventImageUrl, // ✅ Pass event flyer URL
                     request.TicketType, // ✅ Pass ticket type
-                    request.BookingReference); // ✅ Pass booking reference
+                    request.BookingReference, // ✅ Pass booking reference
+                    false); // ✅ Regular user booking, not organizer booking
                 _logger.LogInformation("🎵 Professional concert ticket PDF generated successfully");
 
                 // Save ticket locally
@@ -322,10 +323,10 @@ namespace EventBooking.API.Services
             return qrCodeImage;
         }
 
-        public async Task<byte[]> GenerateProfessionalConcertTicketAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? ticketType = null, string? bookingReference = null)
+        public async Task<byte[]> GenerateProfessionalConcertTicketAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? ticketType = null, string? bookingReference = null, bool isOrganizerBooking = false)
         {
-            _logger.LogInformation("🎵 PROFESSIONAL DESIGN - Generating concert ticket for Event: {EventName}, Seat: {SeatNumber}, Attendee: {FirstName}, TicketType: {TicketType}, BookingRef: {BookingRef}, FoodItems: {FoodCount}",
-                eventName, seatNumber, firstName, ticketType ?? "Standard", bookingReference ?? "N/A", foodOrders?.Count ?? 0);
+            _logger.LogInformation("🎵 PROFESSIONAL DESIGN - Generating concert ticket for Event: {EventName}, Seat: {SeatNumber}, Attendee: {FirstName}, TicketType: {TicketType}, BookingRef: {BookingRef}, FoodItems: {FoodCount}, IsOrganizerBooking: {IsOrganizerBooking}",
+                eventName, seatNumber, firstName, ticketType ?? "Standard", bookingReference ?? "N/A", foodOrders?.Count ?? 0, isOrganizerBooking);
 
             // Fetch additional event details and organizer information from database
             var eventDetails = await GetEventDetailsAsync(eventId);
@@ -447,11 +448,16 @@ namespace EventBooking.API.Services
                 rightCell.Padding = 15f; // Reduced padding
                 rightCell.VerticalAlignment = Element.ALIGN_TOP;
 
-                // Guest Badge (Compact)
+                // Guest Badge (Compact) - Different text for organizer vs user tickets
                 var guestTable = new PdfPTable(1);
                 guestTable.WidthPercentage = 100;
                 var guestFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 11, BaseColor.WHITE);
-                var guestPara = new Paragraph("CONCERT GUEST", guestFont);
+                
+                // Check if this is an organizer-generated ticket
+                bool isOrganizerTicket = isOrganizerBooking;
+                var guestText = isOrganizerTicket ? "ORGANIZER GUEST" : "CONCERT GUEST";
+                
+                var guestPara = new Paragraph(guestText, guestFont);
                 guestPara.Alignment = Element.ALIGN_CENTER;
                 
                 var guestCell = new PdfPCell(guestPara);
@@ -469,33 +475,6 @@ namespace EventBooking.API.Services
                 namePara.Alignment = Element.ALIGN_CENTER;
                 namePara.SpacingAfter = 8f;
                 rightCell.AddElement(namePara);
-
-                // Ticket Type Badge (New - Prominent Display) - Only for Organizer-generated tickets
-                // Check if this is an organizer-generated ticket (booking-based identifier starting with "B")
-                bool isOrganizerGeneratedTicket = !string.IsNullOrEmpty(seatNumber) && 
-                                                 seatNumber.StartsWith("B") && 
-                                                 seatNumber.Contains("-");
-                
-                if (!string.IsNullOrEmpty(ticketType) && isOrganizerGeneratedTicket)
-                {
-                    var ticketTypeBadgeTable = new PdfPTable(1);
-                    ticketTypeBadgeTable.WidthPercentage = 100;
-                    
-                    var ticketTypeBadgeFont = FontFactory.GetFont(FontFactory.HELVETICA_BOLD, 12, BaseColor.WHITE);
-                    var ticketTypeBadgePara = new Paragraph(ticketType.ToUpper(), ticketTypeBadgeFont);
-                    ticketTypeBadgePara.Alignment = Element.ALIGN_CENTER;
-                    
-                    var ticketTypeBadgeCell = new PdfPCell(ticketTypeBadgePara);
-                    ticketTypeBadgeCell.BackgroundColor = new BaseColor(78, 205, 196); // Teal background
-                    ticketTypeBadgeCell.BorderWidth = 2f;
-                    ticketTypeBadgeCell.BorderColor = new BaseColor(255, 107, 107); // Coral border
-                    ticketTypeBadgeCell.Padding = 8f;
-                    ticketTypeBadgeCell.HorizontalAlignment = Element.ALIGN_CENTER;
-                    
-                    ticketTypeBadgeTable.AddCell(ticketTypeBadgeCell);
-                    ticketTypeBadgeTable.SpacingAfter = 10f;
-                    rightCell.AddElement(ticketTypeBadgeTable);
-                }
 
                 // Ticket Information (Compact) - 2x2 Grid
                 var ticketInfoTable = new PdfPTable(2);

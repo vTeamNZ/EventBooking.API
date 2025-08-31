@@ -12,7 +12,7 @@ namespace EventBooking.API.Services
         /// Generates a professional concert ticket with enhanced styling and features.
         /// This is the preferred ticket generation method for all use cases.
         /// </summary>
-        Task<byte[]> GenerateProfessionalConcertTicketAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? ticketType = null, string? bookingReference = null);
+        Task<byte[]> GenerateProfessionalConcertTicketAsync(string eventId, string eventName, string seatNumber, string firstName, byte[] qrCodeImage, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? ticketType = null, string? bookingReference = null, bool isOrganizerBooking = false);
         string SaveTicketLocally(byte[] pdfTicket, string eventId, string eventName, string firstName, string paymentGuid, string seatNumber);
         List<string> ListStoredTickets();
         bool DeleteStoredTicket(string fileName);
