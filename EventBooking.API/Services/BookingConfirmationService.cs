@@ -571,7 +571,10 @@ namespace EventBooking.API.Services
                                                 ticketTypeId = ticketType.Id,
                                                 type = ticketType.Type,
                                                 color = ticketType.Color,
-                                                eventSeatMode = eventEntity.SeatSelectionMode.ToString()
+                                                eventSeatMode = eventEntity.SeatSelectionMode.ToString(),
+                                                allocatedTickets = Enumerable.Range(1, quantity)
+                                                    .Select(i => $"{ticketType.Name ?? ticketType.Type}-{i}")
+                                                    .ToArray()
                                             }),
                                             ItemDetails = JsonSerializer.Serialize(new 
                                             {
@@ -688,7 +691,10 @@ namespace EventBooking.API.Services
                                             ticketTypeId = ticketType.Id,
                                             type = ticketType.Type,
                                             color = ticketType.Color,
-                                            eventSeatMode = eventEntity.SeatSelectionMode.ToString()
+                                            eventSeatMode = eventEntity.SeatSelectionMode.ToString(),
+                                            allocatedTickets = Enumerable.Range(1, quantity)
+                                                .Select(i => $"{ticketType.Name ?? ticketType.Type}-{i}")
+                                                .ToArray()
                                         }),
                                         ItemDetails = JsonSerializer.Serialize(new 
                                         {
