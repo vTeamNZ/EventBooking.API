@@ -37,6 +37,8 @@ namespace EventBooking.API.Controllers
             _seatCreationService = seatCreationService;
         }
 
+
+
         // GET: api/Events
         [AllowAnonymous]
         [HttpGet]
