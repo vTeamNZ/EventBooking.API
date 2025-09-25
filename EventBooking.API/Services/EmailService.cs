@@ -100,7 +100,7 @@ namespace EventBooking.API.Services
         /// <summary>
         /// 🎯 Enhanced email with QR code in body and event image (No wallet integration)
         /// </summary>
-        public async Task<bool> SendEnhancedTicketEmailAsync(string toEmail, string eventName, string firstName, byte[] ticketPdf, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, byte[]? qrCodeImage = null, string? bookingId = null)
+        public async Task<bool> SendEnhancedTicketEmailAsync(string toEmail, string eventName, string firstName, byte[] ticketPdf, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, byte[]? qrCodeImage = null, string? bookingId = null, string? seatOrTicketNumber = null, string? ticketType = null, DateTime? eventDate = null, string? eventLocation = null)
         {
             try
             {
@@ -116,7 +116,7 @@ namespace EventBooking.API.Services
                 var bodyBuilder = new BodyBuilder();
                 
                 // Generate enhanced HTML with embedded QR code and event image
-                var htmlBody = GenerateEnhancedEmailHtml(eventName, firstName, foodOrders, eventImageUrl, bookingId);
+                var htmlBody = GenerateEnhancedEmailHtml(eventName, firstName, foodOrders, eventImageUrl, bookingId, seatOrTicketNumber, ticketType, eventDate, eventLocation);
                 bodyBuilder.HtmlBody = htmlBody;
 
                 // Embed QR code image if provided
@@ -144,10 +144,28 @@ namespace EventBooking.API.Services
                     }
                 }
 
-                // Add PDF ticket as attachment
+                // Add PDF ticket as attachment with seat/ticket number in filename
                 if (ticketPdf != null && ticketPdf.Length > 0)
                 {
-                    var attachmentFileName = $"eTicket_{eventName}_{firstName}.pdf";
+                    // Generate filename with seat/ticket number
+                    string seatTicketPart = "";
+                    if (!string.IsNullOrEmpty(seatOrTicketNumber))
+                    {
+                        // Check if it's allocated seating (like F9, G10) or general admission (like VIP-1)
+                        bool isAllocatedSeating = seatOrTicketNumber.Length <= 3 && char.IsLetter(seatOrTicketNumber[0]);
+                        if (isAllocatedSeating)
+                        {
+                            seatTicketPart = $"_Seat{seatOrTicketNumber}";
+                        }
+                        else
+                        {
+                            // For general admission, clean up the identifier (remove dashes, etc.)
+                            string cleanTicketNumber = seatOrTicketNumber.Replace("-", "");
+                            seatTicketPart = $"_{cleanTicketNumber}";
+                        }
+                    }
+                    
+                    var attachmentFileName = $"eTicket_{eventName}_{firstName}{seatTicketPart}.pdf";
                     bodyBuilder.Attachments.Add(attachmentFileName, ticketPdf);
                     _logger.LogDebug("🎯 Added PDF ticket attachment: {FileName}, Size: {Size} bytes", attachmentFileName, ticketPdf.Length);
                 }
@@ -280,7 +298,7 @@ namespace EventBooking.API.Services
         /// <summary>
         /// 🎯 Enhanced email template with embedded QR code and event image (No wallet buttons)
         /// </summary>
-        private string GenerateEnhancedEmailHtml(string eventName, string firstName, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? bookingId = null)
+        private string GenerateEnhancedEmailHtml(string eventName, string firstName, List<FoodOrderInfo>? foodOrders = null, string? eventImageUrl = null, string? bookingId = null, string? seatOrTicketNumber = null, string? ticketType = null, DateTime? eventDate = null, string? eventLocation = null)
         {
             // Generate food orders HTML section
             var foodOrdersHtml = "";
@@ -326,6 +344,10 @@ namespace EventBooking.API.Services
         .event-image {{ max-width: 100%; height: auto; min-height: 400px; max-height: 500px; object-fit: cover; border-radius: 12px; box-shadow: 0 8px 25px rgba(0,0,0,0.15); }}
         .qr-section {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 25px; margin: 25px 0; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(102,126,234,0.3); }}
         .qr-code {{ width: 200px; height: 200px; margin: 15px auto; background: white; padding: 15px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }}
+        .details-container {{ display: flex; gap: 20px; margin: 20px 0; }}
+        .event-details, .ticket-details {{ flex: 1; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 20px; border-radius: 12px; }}
+        .event-details {{ border-left: 5px solid #4ecdc4; }}
+        .ticket-details {{ border-left: 5px solid #667eea; }}
         .ticket-info {{ background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 20px; margin: 20px 0; border-radius: 12px; border-left: 5px solid #4ecdc4; }}
         .instructions {{ background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%); padding: 20px; margin: 20px 0; border-radius: 12px; border-left: 5px solid #ffc107; }}
         .footer {{ background: #2c3e50; color: white; padding: 25px; text-align: center; }}
@@ -333,6 +355,7 @@ namespace EventBooking.API.Services
         @media (max-width: 600px) {{ 
             .qr-code {{ width: 150px; height: 150px; }} 
             .event-image {{ min-height: 250px; max-height: 350px; }}
+            .details-container {{ flex-direction: column; gap: 15px; }}
         }}
     </style>
 </head>
@@ -352,6 +375,24 @@ namespace EventBooking.API.Services
                 <img src='cid:event-image-embedded' alt='{eventName}' class='event-image' />
             </div>" : "")}
             
+            <div class='details-container'>
+                <div class='event-details'>
+                    <h3 style='margin: 0 0 15px 0; color: #4ecdc4;'>� Event Details</h3>
+                    <p style='margin: 5px 0;'><strong>Event:</strong> {eventName}</p>
+                    {(eventDate.HasValue ? $"<p style='margin: 5px 0;'><strong>Date:</strong> {eventDate.Value:dddd, MMMM dd, yyyy}</p>" : "")}
+                    {(eventDate.HasValue ? $"<p style='margin: 5px 0;'><strong>Time:</strong> {eventDate.Value:hh:mm tt}</p>" : "")}
+                    {(!string.IsNullOrEmpty(eventLocation) ? $"<p style='margin: 5px 0;'><strong>Location:</strong> {eventLocation}</p>" : "")}
+                </div>
+                
+                <div class='ticket-details'>
+                    <h3 style='margin: 0 0 15px 0; color: #667eea;'>🎫 Ticket Details</h3>
+                    {GenerateTicketDetailsHtml(seatOrTicketNumber, ticketType)}
+                    <p style='margin: 5px 0;'><strong>Attendee:</strong> {firstName}</p>
+                    <p style='margin: 5px 0;'><strong>Status:</strong> <span style='color: #28a745; font-weight: bold;'>✅ Confirmed</span></p>
+                    <p style='margin: 5px 0;'><strong>Booking ID:</strong> {bookingId ?? "N/A"}</p>
+                </div>
+            </div>
+            
             <div class='qr-section'>
                 <h3 style='margin: 0 0 10px 0; font-size: 20px;'>📱 Quick Entry QR Code</h3>
                 <p style='margin: 0 0 15px 0; opacity: 0.9;'>Scan this at the venue entrance</p>
@@ -359,14 +400,6 @@ namespace EventBooking.API.Services
                     <img src='cid:qrcode-embedded' alt='Entry QR Code' style='width: 100%; height: 100%; object-fit: contain;' />
                 </div>
                 <p style='margin: 15px 0 0 0; font-size: 12px; opacity: 0.8;'>Booking ID: {bookingId ?? "N/A"}</p>
-            </div>
-            
-            <div class='ticket-info'>
-                <h3 style='margin: 0 0 15px 0; color: #4ecdc4;'>📅 Event Details</h3>
-                <p style='margin: 5px 0;'><strong>Event:</strong> {eventName}</p>
-                <p style='margin: 5px 0;'><strong>Attendee:</strong> {firstName}</p>
-                <p style='margin: 5px 0;'><strong>Status:</strong> <span style='color: #28a745; font-weight: bold;'>✅ Confirmed</span></p>
-                <p style='margin: 5px 0;'><strong>Booking ID:</strong> {bookingId ?? "N/A"}</p>
             </div>
             
             {foodOrdersHtml}
@@ -396,6 +429,32 @@ namespace EventBooking.API.Services
 </html>";
         }
         
+        /// <summary>
+        /// Generate ticket details HTML based on seat/ticket type
+        /// </summary>
+        private string GenerateTicketDetailsHtml(string? seatOrTicketNumber, string? ticketType)
+        {
+            if (string.IsNullOrEmpty(seatOrTicketNumber))
+                return "";
+                
+            // Check if it's allocated seating (like F9, G10) or general admission (like VIP-1)
+            bool isAllocatedSeating = seatOrTicketNumber.Length <= 3 && char.IsLetter(seatOrTicketNumber[0]);
+            
+            if (isAllocatedSeating)
+            {
+                // Allocated seating display
+                return $@"
+                    <p style='margin: 5px 0;'><strong>Seat Number:</strong> <span style='font-size: 20px; color: #667eea; font-weight: bold;'>{seatOrTicketNumber}</span></p>
+                    {(!string.IsNullOrEmpty(ticketType) ? $"<p style='margin: 5px 0;'><strong>Ticket Type:</strong> {ticketType}</p>" : "")}";
+            }
+            else
+            {
+                // General admission display (no "Access" field as requested)
+                return $@"
+                    <p style='margin: 5px 0;'><strong>Ticket Number:</strong> <span style='font-size: 20px; color: #667eea; font-weight: bold;'>#{seatOrTicketNumber}</span></p>
+                    {(!string.IsNullOrEmpty(ticketType) ? $"<p style='margin: 5px 0;'><strong>Ticket Type:</strong> {ticketType}</p>" : "")}";
+            }
+        }
 
     }
 }

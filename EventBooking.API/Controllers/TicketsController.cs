@@ -77,7 +77,11 @@ namespace EventBooking.API.Controllers
                         request.FoodOrders,
                         result.EventImageUrl,
                         result.QRCodeImage,
-                        result.BookingId
+                        result.BookingId,
+                        request.SeatNumber, // seat or ticket number
+                        request.TicketType, // ticket type
+                        null, // event date (not available in controller)
+                        null // event location (not available in controller)
                     );
                     
                     if (emailSuccess)

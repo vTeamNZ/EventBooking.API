@@ -695,7 +695,11 @@ namespace EventBooking.API.Controllers
                                     new List<FoodOrderInfo>(), // Empty food orders for organizer bookings
                                     fullImageUrl, // Include event flyer in email with full URL
                                     qrCodeImage, // QR code for this specific ticket
-                                    booking.Id.ToString() // Booking ID for reference
+                                    booking.Id.ToString(), // Booking ID for reference
+                                    ticketDetail.SeatNumber, // seat or ticket number
+                                    null, // ticket type (not available in controller)
+                                    eventItem.Date, // event date
+                                    eventItem.Location // event location
                                 );
 
                                 if (emailSent)

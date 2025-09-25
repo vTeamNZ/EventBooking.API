@@ -1039,7 +1039,9 @@ namespace EventBooking.API.Services
                     firstName ?? "Guest",
                     eventEntity.Organizer?.ContactEmail ?? "",
                     eventEntity.ImageUrl,
-                    booking.Id
+                    booking.Id,
+                    eventEntity.Date, // event date
+                    eventEntity.Location // event location
                 );
                 
                 // ✅ Calculate processing summary for user feedback (ENHANCED APPROACH - Individual emails)
@@ -1247,7 +1249,11 @@ namespace EventBooking.API.Services
                         foodOrders,
                         fullEventImageUrl, // ✅ Include event flyer with full URL for proper embedding
                         qrCodeImage, // Include QR code bytes for embedded display
-                        bookingId // Include booking ID for tracking
+                        bookingId, // Include booking ID for tracking
+                        qrResult.SeatNumber, // seat or ticket number from QR result
+                        null, // ticket type (not available in deprecated method)
+                        null, // event date (not available in deprecated method)
+                        null // event location (not available in deprecated method)
                     );
 
                     qrResult.CustomerEmailResult = new EmailDeliveryResult
@@ -1382,7 +1388,9 @@ namespace EventBooking.API.Services
             string firstName,
             string organizerEmail,
             string? eventImageUrl,
-            int bookingId)
+            int bookingId,
+            DateTime? eventDate = null,
+            string? eventLocation = null)
         {
             try
             {
@@ -1459,6 +1467,19 @@ namespace EventBooking.API.Services
                         bool customerEmailSuccess = false;
                         try
                         {
+                            // Extract ticket type from seat number or use a default approach
+                            string? ticketType = null;
+                            if (!string.IsNullOrEmpty(qr.SeatNumber))
+                            {
+                                // For allocated seating (like F9, G10), ticket type might be in metadata
+                                // For general admission (like VIP-1, Standard-2), extract ticket type
+                                bool isAllocatedSeating = qr.SeatNumber.Length <= 3 && char.IsLetter(qr.SeatNumber[0]);
+                                if (!isAllocatedSeating && qr.SeatNumber.Contains("-"))
+                                {
+                                    ticketType = qr.SeatNumber.Split('-')[0]; // Extract "VIP" from "VIP-1"
+                                }
+                            }
+                            
                             customerEmailSuccess = await _emailService.SendEnhancedTicketEmailAsync(
                                 customerEmail,
                                 eventTitle,
@@ -1467,7 +1488,11 @@ namespace EventBooking.API.Services
                                 qr.SeatSpecificFoodOrders, // Seat-specific food orders
                                 fullEventImageUrl,
                                 qr.QRCodeImage,
-                                $"BK-{bookingId:D6}-{qr.SeatNumber}"
+                                $"BK-{bookingId:D6}-{qr.SeatNumber}",
+                                qr.SeatNumber, // seat or ticket number
+                                ticketType, // ticket type
+                                eventDate, // event date
+                                eventLocation // event location
                             );
 
                             if (customerEmailSuccess) successfulCustomerEmails++;
