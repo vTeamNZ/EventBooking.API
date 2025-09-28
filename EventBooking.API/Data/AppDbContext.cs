@@ -28,6 +28,7 @@ namespace EventBooking.API.Data
         public DbSet<SeatReservation> SeatReservations { get; set; } // ✅ Industry-standard reservation tracking
         public DbSet<Venue> Venues { get; set; }
         public DbSet<EventBookingRecord> EventBookings { get; set; } // ✅ Direct ticket booking for organizers
+        public DbSet<OrganizerTicketPayment> OrganizerTicketPayments { get; set; } // ✅ Individual ticket payment tracking
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -258,6 +259,101 @@ namespace EventBooking.API.Data
                 .WithMany()
                 .HasForeignKey(r => r.EventId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // Configure OrganizerTicketPayment entity
+            modelBuilder.Entity<OrganizerTicketPayment>(entity =>
+            {
+                // Configure decimal precision
+                entity.Property(otp => otp.TicketPrice)
+                    .HasPrecision(18, 2);
+
+                // Configure required string fields
+                entity.Property(otp => otp.CustomerFirstName)
+                    .HasMaxLength(100)
+                    .IsRequired();
+
+                entity.Property(otp => otp.CustomerEmail)
+                    .HasMaxLength(255)
+                    .IsRequired();
+
+                entity.Property(otp => otp.Status)
+                    .HasMaxLength(50)
+                    .IsRequired()
+                    .HasDefaultValue("Active");
+
+                // Configure optional string fields
+                entity.Property(otp => otp.CustomerLastName)
+                    .HasMaxLength(100)
+                    .IsRequired(false);
+
+                entity.Property(otp => otp.CustomerMobile)
+                    .HasMaxLength(20)
+                    .IsRequired(false);
+
+                entity.Property(otp => otp.PaymentMethod)
+                    .HasMaxLength(50)
+                    .IsRequired(false);
+
+                entity.Property(otp => otp.Notes)
+                    .HasMaxLength(500)
+                    .IsRequired(false);
+
+                entity.Property(otp => otp.SeatDetails)
+                    .IsRequired(false);
+
+                entity.Property(otp => otp.CreatedByUserId)
+                    .HasMaxLength(450)
+                    .IsRequired(false);
+
+                entity.Property(otp => otp.UpdatedByUserId)
+                    .HasMaxLength(450)
+                    .IsRequired(false);
+
+                // Configure default values
+                entity.Property(otp => otp.IsPaidToOrganizer)
+                    .HasDefaultValue(false);
+
+                entity.Property(otp => otp.CreatedAt)
+                    .HasDefaultValueSql("GETUTCDATE()");
+
+                entity.Property(otp => otp.UpdatedAt)
+                    .HasDefaultValueSql("GETUTCDATE()");
+
+                // Configure relationships
+                entity.HasOne(otp => otp.BookingLineItem)
+                    .WithMany()
+                    .HasForeignKey(otp => otp.BookingLineItemId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                entity.HasOne(otp => otp.Event)
+                    .WithMany()
+                    .HasForeignKey(otp => otp.EventId)
+                    .OnDelete(DeleteBehavior.Restrict); // Prevent accidental event deletion
+
+                entity.HasOne(otp => otp.TicketType)
+                    .WithMany()
+                    .HasForeignKey(otp => otp.TicketTypeId)
+                    .OnDelete(DeleteBehavior.Restrict); // Prevent accidental ticket type deletion
+
+                // Create indexes for performance
+                entity.HasIndex(otp => otp.BookingLineItemId)
+                    .HasDatabaseName("IX_OrganizerTicketPayments_BookingLineItemId");
+
+                entity.HasIndex(otp => otp.EventId)
+                    .HasDatabaseName("IX_OrganizerTicketPayments_EventId");
+
+                entity.HasIndex(otp => otp.TicketTypeId)
+                    .HasDatabaseName("IX_OrganizerTicketPayments_TicketTypeId");
+
+                entity.HasIndex(otp => otp.CustomerEmail)
+                    .HasDatabaseName("IX_OrganizerTicketPayments_CustomerEmail");
+
+                entity.HasIndex(otp => otp.IsPaidToOrganizer)
+                    .HasDatabaseName("IX_OrganizerTicketPayments_IsPaidToOrganizer");
+
+                entity.HasIndex(otp => new { otp.EventId, otp.IsPaidToOrganizer })
+                    .HasDatabaseName("IX_OrganizerTicketPayments_EventId_IsPaidToOrganizer");
+            });
         }
 
     }
