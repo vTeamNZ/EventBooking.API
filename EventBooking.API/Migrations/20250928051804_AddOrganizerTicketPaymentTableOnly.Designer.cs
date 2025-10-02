@@ -12,8 +12,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace EventBooking.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20250720191042_IncreaseQRCodeColumnSize")]
-    partial class IncreaseQRCodeColumnSize
+    [Migration("20250928051804_AddOrganizerTicketPaymentTableOnly")]
+    partial class AddOrganizerTicketPaymentTableOnly
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -439,6 +439,112 @@ namespace EventBooking.API.Migrations
                     b.ToTable("Organizers");
                 });
 
+            modelBuilder.Entity("EventBooking.API.Models.OrganizerTicketPayment", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("BookingLineItemId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETUTCDATE()");
+
+                    b.Property<string>("CreatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<string>("CustomerEmail")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<string>("CustomerFirstName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("CustomerLastName")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("CustomerMobile")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<int>("EventId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("IsPaidToOrganizer")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime?>("PaidDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PaymentMethod")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("SeatDetails")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasDefaultValue("Active");
+
+                    b.Property<decimal>("TicketPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("TicketTypeId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("GETUTCDATE()");
+
+                    b.Property<string>("UpdatedByUserId")
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingLineItemId")
+                        .HasDatabaseName("IX_OrganizerTicketPayments_BookingLineItemId");
+
+                    b.HasIndex("CustomerEmail")
+                        .HasDatabaseName("IX_OrganizerTicketPayments_CustomerEmail");
+
+                    b.HasIndex("EventId")
+                        .HasDatabaseName("IX_OrganizerTicketPayments_EventId");
+
+                    b.HasIndex("IsPaidToOrganizer")
+                        .HasDatabaseName("IX_OrganizerTicketPayments_IsPaidToOrganizer");
+
+                    b.HasIndex("TicketTypeId")
+                        .HasDatabaseName("IX_OrganizerTicketPayments_TicketTypeId");
+
+                    b.HasIndex("EventId", "IsPaidToOrganizer")
+                        .HasDatabaseName("IX_OrganizerTicketPayments_EventId_IsPaidToOrganizer");
+
+                    b.ToTable("OrganizerTicketPayments");
+                });
+
             modelBuilder.Entity("EventBooking.API.Models.PaymentRecord", b =>
                 {
                     b.Property<int>("Id")
@@ -850,6 +956,9 @@ namespace EventBooking.API.Migrations
                     b.Property<int>("EventId")
                         .HasColumnType("int");
 
+                    b.Property<bool>("IsStanding")
+                        .HasColumnType("bit");
+
                     b.Property<int?>("MaxTickets")
                         .HasColumnType("int");
 
@@ -864,6 +973,9 @@ namespace EventBooking.API.Migrations
 
                     b.Property<string>("SeatRowAssignments")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("StandingCapacity")
+                        .HasColumnType("int");
 
                     b.Property<string>("Type")
                         .IsRequired()
@@ -1152,6 +1264,33 @@ namespace EventBooking.API.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("EventBooking.API.Models.OrganizerTicketPayment", b =>
+                {
+                    b.HasOne("EventBooking.API.Models.BookingLineItem", "BookingLineItem")
+                        .WithMany()
+                        .HasForeignKey("BookingLineItemId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("EventBooking.API.Models.Event", "Event")
+                        .WithMany()
+                        .HasForeignKey("EventId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("EventBooking.API.Models.TicketType", "TicketType")
+                        .WithMany()
+                        .HasForeignKey("TicketTypeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("BookingLineItem");
+
+                    b.Navigation("Event");
+
+                    b.Navigation("TicketType");
                 });
 
             modelBuilder.Entity("EventBooking.API.Models.Payments.Payment", b =>

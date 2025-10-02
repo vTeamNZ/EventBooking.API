@@ -301,14 +301,6 @@ namespace EventBooking.API.Data
                 entity.Property(otp => otp.SeatDetails)
                     .IsRequired(false);
 
-                entity.Property(otp => otp.CreatedByUserId)
-                    .HasMaxLength(450)
-                    .IsRequired(false);
-
-                entity.Property(otp => otp.UpdatedByUserId)
-                    .HasMaxLength(450)
-                    .IsRequired(false);
-
                 // Configure default values
                 entity.Property(otp => otp.IsPaidToOrganizer)
                     .HasDefaultValue(false);

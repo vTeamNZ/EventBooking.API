@@ -17,19 +17,22 @@ namespace EventBooking.API.Controllers
         private readonly IQRTicketService _qrTicketService;
         private readonly IEmailService _emailService;
         private readonly IConfiguration _configuration;
+        private readonly IOrganizerTicketPaymentService _organizerTicketPaymentService;
 
         public BookingsController(
             AppDbContext context, 
             ILogger<BookingsController> logger,
             IQRTicketService qrTicketService,
             IEmailService emailService,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            IOrganizerTicketPaymentService organizerTicketPaymentService)
         {
             _context = context;
             _logger = logger;
             _qrTicketService = qrTicketService;
             _emailService = emailService;
             _configuration = configuration;
+            _organizerTicketPaymentService = organizerTicketPaymentService;
         }
 
         // GET: api/Bookings
@@ -484,6 +487,7 @@ namespace EventBooking.API.Controllers
 
                 // Create consolidated booking line items per ticket type (matching user booking architecture)
                 var lineItems = new List<BookingLineItem>();
+                var totalSeatsAllocated = 0; // Track cumulative seats allocated across all ticket types
 
                 foreach (var ticketRequest in request.TicketRequests)
                 {
@@ -493,8 +497,8 @@ namespace EventBooking.API.Controllers
                     var allocatedSeats = new List<string>();
                     var allocatedTickets = new List<string>();
                     
-                    // Determine seat allocation based on event type and available seat numbers
-                    var seatsForThisType = request.SeatNumbers.Skip(allocatedSeats.Count + allocatedTickets.Count).Take(ticketRequest.Quantity).ToList();
+                    // Fix: Use cumulative seat count instead of current type's empty lists
+                    var seatsForThisType = request.SeatNumbers.Skip(totalSeatsAllocated).Take(ticketRequest.Quantity).ToList();
                     
                     for (int i = 0; i < ticketRequest.Quantity; i++)
                     {
@@ -559,10 +563,16 @@ namespace EventBooking.API.Controllers
                         CreatedAt = DateTime.UtcNow
                     };
                     lineItems.Add(lineItem);
+                    
+                    // Update cumulative seat count for next ticket type
+                    totalSeatsAllocated += ticketRequest.Quantity;
                 }
 
                 _context.BookingLineItems.AddRange(lineItems);
                 await _context.SaveChangesAsync();
+
+                // ✅ NEW: Create individual OrganizerTicketPayment records for granular payment tracking
+                await CreateOrganizerTicketPaymentRecords(booking, lineItems, validTicketTypes);
 
                 // Convert relative image URL to full URL for external services (before loop)
                 var fullImageUrl = GetFullImageUrl(eventItem.ImageUrl);
@@ -837,6 +847,88 @@ namespace EventBooking.API.Controllers
             _logger.LogDebug("Converted relative URL '{RelativeUrl}' to full URL '{FullUrl}' using base '{BaseUrl}'", 
                 relativeUrl, fullUrl, baseUrl);
             return fullUrl;
+        }
+
+        /// <summary>
+        /// Helper method to create individual OrganizerTicketPayment records from consolidated BookingLineItems
+        /// This enables granular payment status tracking for organizer-issued tickets
+        /// </summary>
+        private async Task CreateOrganizerTicketPaymentRecords(
+            Booking booking, 
+            List<BookingLineItem> lineItems, 
+            List<TicketType> validTicketTypes)
+        {
+            try
+            {
+                _logger.LogInformation("🎯 PAYMENT TRACKING - Creating individual payment records for booking {BookingId}", booking.Id);
+                
+                var createdPayments = 0;
+
+                foreach (var lineItem in lineItems)
+                {
+                    // Get the ticket type for pricing information
+                    var ticketType = validTicketTypes.FirstOrDefault(tt => tt.Id == lineItem.ItemId);
+                    if (ticketType == null)
+                    {
+                        _logger.LogWarning("❌ PAYMENT TRACKING - Ticket type {TicketTypeId} not found for line item {LineItemId}", 
+                            lineItem.ItemId, lineItem.Id);
+                        continue;
+                    }
+
+                    // Parse the SeatDetails JSON to extract individual seat/ticket allocations
+                    var seatDetailsObj = JsonSerializer.Deserialize<JsonElement>(lineItem.SeatDetails);
+                    var allocatedItems = new List<string>();
+                    
+                    // Extract allocated seats
+                    if (seatDetailsObj.TryGetProperty("allocatedSeats", out var allocatedSeatsProp) && 
+                        allocatedSeatsProp.ValueKind == JsonValueKind.Array)
+                    {
+                        allocatedItems.AddRange(allocatedSeatsProp.EnumerateArray().Select(s => s.GetString() ?? "General"));
+                    }
+                    
+                    // Extract allocated tickets
+                    if (seatDetailsObj.TryGetProperty("allocatedTickets", out var allocatedTicketsProp) && 
+                        allocatedTicketsProp.ValueKind == JsonValueKind.Array)
+                    {
+                        allocatedItems.AddRange(allocatedTicketsProp.EnumerateArray().Select(t => t.GetString() ?? "General"));
+                    }
+
+                    // Create individual payment record for each allocated seat/ticket
+                    foreach (var allocatedItem in allocatedItems)
+                    {
+                        var paymentRequest = new DTOs.CreateOrganizerTicketPaymentRequest
+                        {
+                            BookingLineItemId = lineItem.Id,
+                            EventId = booking.EventId,
+                            TicketTypeId = lineItem.ItemId,
+                            CustomerFirstName = booking.CustomerFirstName,
+                            CustomerLastName = booking.CustomerLastName,
+                            CustomerEmail = booking.CustomerEmail,
+                            CustomerMobile = booking.CustomerMobile,
+                            TicketPrice = ticketType.Price,
+                            IsPaidToOrganizer = false, // Default to unpaid status
+                            SeatDetails = allocatedItem
+                        };
+
+                        // Create the payment record using the service
+                        var paymentRecord = await _organizerTicketPaymentService.CreatePaymentAsync(paymentRequest);
+                        
+                        createdPayments++;
+                        
+                        _logger.LogDebug("✅ PAYMENT TRACKING - Created payment record {PaymentId} for {SeatDetails} (TicketType: {TicketType}, Price: ${Price})", 
+                            paymentRecord.Id, allocatedItem, ticketType.Name, ticketType.Price);
+                    }
+                }
+
+                _logger.LogInformation("✅ PAYMENT TRACKING - Successfully created {Count} individual payment records for booking {BookingId}", 
+                    createdPayments, booking.Id);
+            }
+            catch (Exception ex)
+            {
+                // ⚠️ NON-BREAKING: Log error but don't fail the entire booking process
+                _logger.LogError(ex, "❌ PAYMENT TRACKING - Failed to create payment tracking records for booking {BookingId}. Booking will continue without payment tracking.", 
+                    booking.Id);
+            }
         }
     }
 

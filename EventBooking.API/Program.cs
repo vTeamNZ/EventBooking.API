@@ -11,6 +11,7 @@ using Microsoft.OpenApi.Models;
 using System.Text;
 using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
+using Stripe;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -165,6 +166,12 @@ builder.Services.AddScoped<IProcessingFeeService, ProcessingFeeService>();
 // Add AfterPay Fee Configuration and Service
 builder.Services.Configure<AfterPayFeeSettings>(builder.Configuration.GetSection("AfterPayFee"));
 builder.Services.AddScoped<IAfterPayFeeService, AfterPayFeeService>();
+
+// Add Organizer Ticket Payment Service
+builder.Services.AddScoped<IOrganizerTicketPaymentService, OrganizerTicketPaymentService>();
+
+// Configure Stripe Services
+builder.Services.AddScoped<Stripe.PaymentIntentService>();
 
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options => 

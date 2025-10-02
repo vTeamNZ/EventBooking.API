@@ -119,18 +119,6 @@ namespace EventBooking.API.Models
         [Required]
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
-        /// <summary>
-        /// User ID who created this payment record (for audit trail)
-        /// </summary>
-        [StringLength(450)] // Standard ASP.NET Identity user ID length
-        public string? CreatedByUserId { get; set; }
-
-        /// <summary>
-        /// User ID who last updated this payment record (for audit trail)
-        /// </summary>
-        [StringLength(450)] // Standard ASP.NET Identity user ID length
-        public string? UpdatedByUserId { get; set; }
-
         // Navigation properties
         public virtual BookingLineItem? BookingLineItem { get; set; }
         public virtual Event? Event { get; set; }
