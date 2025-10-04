@@ -21,7 +21,7 @@ param(
     [int]$MaxSessions = 1000,
     
     [Parameter(Mandatory=$false)]
-    [switch]$ExactMatch = $false,
+    [switch]$ExactMatch = $true,
     
     [Parameter(Mandatory=$false)]
     [string]$ExportPath = "",
