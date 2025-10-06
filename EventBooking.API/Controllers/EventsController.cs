@@ -25,17 +25,20 @@ namespace EventBooking.API.Controllers
         private readonly IEventStatusService _eventStatusService;
         private readonly IImageService _imageService;
         private readonly ISeatCreationService _seatCreationService;
+        private readonly ITicketAvailabilityService _ticketAvailabilityService;
 
         public EventsController(
             AppDbContext context, 
             IEventStatusService eventStatusService, 
             IImageService imageService,
-            ISeatCreationService seatCreationService)
+            ISeatCreationService seatCreationService,
+            ITicketAvailabilityService ticketAvailabilityService)
         {
             _context = context;
             _eventStatusService = eventStatusService;
             _imageService = imageService;
             _seatCreationService = seatCreationService;
+            _ticketAvailabilityService = ticketAvailabilityService;
         }
 
 
@@ -565,43 +568,78 @@ namespace EventBooking.API.Controllers
 
             try
             {
-                // Get ticket types with capacity data
+                // 🎯 ARCHITECTURE v6: Reuse Tab 02 (Stripe) and Tab 03 (Organizer) data instead of duplicating logic
+                // Using private helper methods that return DTOs directly (no ActionResult wrapper issues)
+                
+                // Get Stripe revenue data (Tab 02) - contains ticket counts per pricing tier
+                var stripeRevenue = await GetStripeRevenueDataAsync(eventId);
+                
+                // Get Organizer revenue data (Tab 03) - contains issued tickets per ticket type
+                var organizerRevenue = await GetOrganizerRevenueDataAsync(eventId);
+                
+                // Get all ticket types for this event
                 var ticketTypes = await _context.TicketTypes
                     .Where(tt => tt.EventId == eventId)
-                    .Select(tt => new
-                    {
-                        tt.Id,
-                        tt.Name,
-                        tt.Price,
-                        tt.Color,
-                        TotalCapacity = _context.Seats
-                            .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId)
-                            .Count(),
-                        SoldTickets = _context.Seats
-                            .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId && s.IsReserved == true)
-                            .Count()
-                    })
                     .ToListAsync();
 
-                var ticketCapacityList = ticketTypes.Select(tt => 
+                var ticketCapacityList = new List<TicketCapacityDTO>();
+
+                foreach (var tt in ticketTypes)
                 {
-                    var availableTickets = tt.TotalCapacity - tt.SoldTickets;
-                    var utilization = tt.TotalCapacity > 0 
-                        ? Math.Round((decimal)tt.SoldTickets / tt.TotalCapacity * 100, 1)
+                    // Calculate sold tickets by summing Tab 02 + Tab 03 data
+                    var stripeTicketsSold = 0;
+                    var organizerTicketsSold = 0;
+                    
+                    if (stripeRevenue != null)
+                    {
+                        // Match by ticket price (Tab 02 groups by pricing tier)
+                        stripeTicketsSold = stripeRevenue.PricingTiers
+                            .Where(tier => tier.TicketPrice == tt.Price)
+                            .Sum(tier => tier.Quantity);
+                    }
+                    
+                    if (organizerRevenue != null)
+                    {
+                        // Match by ticket type ID (Tab 03 has direct ticket type data)
+                        var organizerTicketType = organizerRevenue.TicketTypes
+                            .FirstOrDefault(ott => ott.TicketTypeId == tt.Id);
+                        organizerTicketsSold = organizerTicketType?.IssuedTickets ?? 0;
+                    }
+                    
+                    var soldTickets = stripeTicketsSold + organizerTicketsSold;
+                    
+                    // Determine total capacity based on event type
+                    int totalCapacity;
+                    if (tt.MaxTickets.HasValue)
+                    {
+                        // General Admission or Standing tickets (uses MaxTickets)
+                        totalCapacity = tt.MaxTickets.Value;
+                    }
+                    else
+                    {
+                        // Seated tickets (count Seat records, excluding Unavailable seats)
+                        totalCapacity = await _context.Seats
+                            .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId && s.Status != SeatStatus.Unavailable)
+                            .CountAsync();
+                    }
+                    
+                    var availableTickets = totalCapacity - soldTickets;
+                    var utilization = totalCapacity > 0 
+                        ? Math.Round((decimal)soldTickets / totalCapacity * 100, 1)
                         : 0;
 
-                    return new TicketCapacityDTO
+                    ticketCapacityList.Add(new TicketCapacityDTO
                     {
                         TicketTypeId = tt.Id,
                         TicketTypeName = tt.Name ?? "Unknown",
                         TicketPrice = tt.Price,
-                        SoldTickets = tt.SoldTickets,
+                        SoldTickets = soldTickets,
                         AvailableTickets = availableTickets,
-                        TotalCapacity = tt.TotalCapacity,
+                        TotalCapacity = totalCapacity,
                         UtilizationPercentage = utilization,
                         Color = tt.Color ?? "#6b7280"
-                    };
-                }).ToList();
+                    });
+                }
 
                 return Ok(ticketCapacityList);
             }
@@ -636,29 +674,92 @@ namespace EventBooking.API.Controllers
                 return NotFound(new { message = "Event not found or access denied" });
             }
 
+            // Call private helper method that contains the business logic
+            var result = await GetStripeRevenueDataAsync(eventId);
+            
+            if (result == null)
+            {
+                return StatusCode(500, new { message = "Failed to retrieve Stripe revenue data" });
+            }
+
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// Tab 3: Get organizer revenue analysis for event
+        /// GET: api/Events/{eventId}/organizer-revenue
+        /// </summary>
+        [Authorize(Roles = "Organizer")]
+        [HttpGet("{eventId}/organizer-revenue")]
+        public async Task<ActionResult<EventBooking.API.DTOs.OrganizerRevenueDTO>> GetOrganizerRevenue(int eventId)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId == null)
+            {
+                return BadRequest(new { message = "Authentication error" });
+            }
+
+            // Verify organizer owns this event
+            var eventExists = await _context.Events
+                .Include(e => e.Organizer)
+                .Where(e => e.Id == eventId && e.Organizer.UserId == userId)
+                .FirstOrDefaultAsync();
+
+            if (eventExists == null)
+            {
+                return NotFound(new { message = "Event not found or access denied" });
+            }
+
+            // Call private helper method that contains the business logic
+            var result = await GetOrganizerRevenueDataAsync(eventId);
+            
+            if (result == null)
+            {
+                return StatusCode(500, new { message = "Failed to retrieve organizer revenue data" });
+            }
+
+            return Ok(result);
+        }
+
+        // ========================================================================================
+        // PRIVATE HELPER METHODS - Extracted business logic without HTTP concerns
+        // These methods are called internally by GetTicketCapacity to avoid ActionResult issues
+        // ========================================================================================
+
+        /// <summary>
+        /// Private helper: Get Stripe revenue data without HTTP wrapper
+        /// Returns DTO directly (nullable) instead of ActionResult
+        /// </summary>
+        private async Task<EventBooking.API.DTOs.StripeRevenueAnalysisDTO?> GetStripeRevenueDataAsync(int eventId)
+        {
             try
             {
+                // Get event details (no authorization check - caller already validated)
+                var eventItem = await _context.Events.FindAsync(eventId);
+                if (eventItem == null) return null;
+
                 // Get Stripe configuration
                 var stripeSecretKey = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY");
                 if (string.IsNullOrEmpty(stripeSecretKey))
                 {
-                    // Try from configuration
                     var configuration = HttpContext.RequestServices.GetRequiredService<IConfiguration>();
                     stripeSecretKey = configuration["Stripe:SecretKey"];
                 }
 
-                if (string.IsNullOrEmpty(stripeSecretKey))
-                {
-                    return StatusCode(500, new { message = "Stripe configuration not found" });
-                }
+                if (string.IsNullOrEmpty(stripeSecretKey)) return null;
 
-                // Get event booking date range from database (matching PowerShell date-based approach)
+                // Get event booking date range from database
                 DateTime? firstBookingDate = null;
                 try
                 {
-                    firstBookingDate = await _context.Bookings
+                    var firstBooking = await _context.Bookings
                         .Where(b => b.EventId == eventId)
                         .MinAsync(b => (DateTime?)b.CreatedAt);
+                    
+                    if (firstBooking.HasValue)
+                    {
+                        firstBookingDate = firstBooking.Value.Date;
+                    }
                 }
                 catch
                 {
@@ -669,7 +770,7 @@ namespace EventBooking.API.Controllers
                 Stripe.StripeConfiguration.ApiKey = stripeSecretKey;
                 var sessionService = new Stripe.Checkout.SessionService();
 
-                // Fetch checkout sessions with date filter if available (matching PowerShell logic)
+                // Fetch checkout sessions with date filter if available
                 var allSessions = new List<Stripe.Checkout.Session>();
                 var hasMore = true;
                 string? startingAfter = null;
@@ -683,10 +784,8 @@ namespace EventBooking.API.Controllers
                         StartingAfter = startingAfter
                     };
 
-                    // Apply date filter if we have a first booking date (database-driven approach)
                     if (firstBookingDate.HasValue)
                     {
-                        // Use DateTime for Stripe API date filter
                         options.Created = new Stripe.DateRangeOptions
                         {
                             GreaterThanOrEqual = firstBookingDate.Value
@@ -701,7 +800,6 @@ namespace EventBooking.API.Controllers
                     {
                         startingAfter = sessionList.Data.Last().Id;
                         
-                        // Only apply session limit if not using date filter (fallback mode)
                         if (!firstBookingDate.HasValue && allSessions.Count >= maxSessionsFallback)
                         {
                             break;
@@ -713,7 +811,7 @@ namespace EventBooking.API.Controllers
                     }
                 }
 
-                // Filter sessions by event title and paid status (matching PowerShell logic)
+                // Filter sessions by event title and paid status
                 var eventTitle = eventItem.Title;
                 var relevantSessions = allSessions
                     .Where(s => s.Metadata != null && 
@@ -722,7 +820,7 @@ namespace EventBooking.API.Controllers
                                s.PaymentStatus == "paid")
                     .ToList();
 
-                // Analyze ticket types (matching PowerShell logic exactly)
+                // Analyze ticket types
                 var ticketTypes = new Dictionary<string, dynamic>();
                 var totalStripeRevenue = 0m;
                 var totalTicketRevenue = 0m;
@@ -731,14 +829,12 @@ namespace EventBooking.API.Controllers
                 {
                     totalStripeRevenue += (decimal)session.AmountTotal.GetValueOrDefault() / 100;
 
-                    // Parse ticket details from metadata (key PowerShell logic)
                     if (session.Metadata != null && session.Metadata.ContainsKey("ticketDetails"))
                     {
                         try
                         {
                             var ticketDetailsJson = session.Metadata["ticketDetails"];
                             
-                            // Parse the JSON array of ticket details
                             using var document = JsonDocument.Parse(ticketDetailsJson);
                             var ticketDetails = document.RootElement;
 
@@ -780,20 +876,19 @@ namespace EventBooking.API.Controllers
                         }
                         catch (Exception ex)
                         {
-                            // Log parsing error but continue processing
                             Console.WriteLine($"Error parsing session {session.Id}: {ex.Message}");
                         }
                     }
                 }
 
-                // Create pricing tier analysis (matching PowerShell PRICING TIER BREAKDOWN logic)
+                // Create pricing tier analysis
                 var priceGroups = new Dictionary<decimal, StripePricingTierDTO>();
 
                 foreach (var ticketType in ticketTypes)
                 {
                     var type = ticketType.Key;
                     var data = ticketType.Value;
-                    var avgPrice = Math.Round(data.Revenue / data.Quantity, 0); // Round to nearest dollar like PowerShell
+                    var avgPrice = Math.Round(data.Revenue / data.Quantity, 0);
 
                     if (!priceGroups.ContainsKey(avgPrice))
                     {
@@ -810,11 +905,11 @@ namespace EventBooking.API.Controllers
 
                     priceGroups[avgPrice].Revenue += data.Revenue;
                     priceGroups[avgPrice].Quantity += data.Quantity;
-                    priceGroups[avgPrice].SeatCombinations += 1; // Each ticket type is a seat combination
+                    priceGroups[avgPrice].SeatCombinations += 1;
                     priceGroups[avgPrice].Transactions += data.Transactions;
                 }
 
-                // Calculate percentages (matching PowerShell logic)
+                // Calculate percentages
                 foreach (var priceGroup in priceGroups.Values)
                 {
                     if (totalTicketRevenue > 0)
@@ -823,63 +918,46 @@ namespace EventBooking.API.Controllers
                     }
                 }
 
-                // Calculate totals (using clean ticket revenue, not Stripe total with fees)
+                // Calculate totals
                 var totalTickets = priceGroups.Values.Sum(p => p.Quantity);
                 var totalTransactions = relevantSessions.Count;
                 var averagePrice = totalTickets > 0 ? Math.Round(totalTicketRevenue / totalTickets, 2) : 0;
 
-                var result = new EventBooking.API.DTOs.StripeRevenueAnalysisDTO
+                return new EventBooking.API.DTOs.StripeRevenueAnalysisDTO
                 {
                     EventId = eventId,
                     EventTitle = eventTitle,
                     PricingTiers = priceGroups.Values.OrderByDescending(p => p.TicketPrice).ToList(),
-                    TotalStripeRevenue = totalTicketRevenue, // Use clean ticket revenue (excluding fees)
+                    TotalStripeRevenue = totalTicketRevenue,
                     TotalStripeTickets = totalTickets,
                     TotalStripeTransactions = totalTransactions,
                     AverageTicketPrice = averagePrice,
                     AnalysisDate = DateTime.UtcNow,
-                    // Additional metadata for debugging/transparency
                     SessionsFetched = allSessions.Count,
                     AnalysisMethod = firstBookingDate.HasValue 
-                        ? $"Database-driven (from {firstBookingDate.Value:yyyy-MM-dd})" 
+                        ? $"Database-driven (from {firstBookingDate.Value:yyyy-MM-dd} 00:00:00 - midnight)" 
                         : $"Fallback mode (recent {maxSessionsFallback} sessions)"
                 };
-
-                return Ok(result);
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to retrieve Stripe revenue data", error = ex.Message });
+                Console.WriteLine($"Error in GetStripeRevenueDataAsync: {ex.Message}");
+                return null;
             }
         }
 
         /// <summary>
-        /// Tab 3: Get organizer revenue analysis for event
-        /// GET: api/Events/{eventId}/organizer-revenue
+        /// Private helper: Get organizer revenue data without HTTP wrapper
+        /// Returns DTO directly (nullable) instead of ActionResult
         /// </summary>
-        [Authorize(Roles = "Organizer")]
-        [HttpGet("{eventId}/organizer-revenue")]
-        public async Task<ActionResult<EventBooking.API.DTOs.OrganizerRevenueDTO>> GetOrganizerRevenue(int eventId)
+        private async Task<EventBooking.API.DTOs.OrganizerRevenueDTO?> GetOrganizerRevenueDataAsync(int eventId)
         {
-            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (userId == null)
-            {
-                return BadRequest(new { message = "Authentication error" });
-            }
-
-            // Verify organizer owns this event
-            var eventExists = await _context.Events
-                .Include(e => e.Organizer)
-                .Where(e => e.Id == eventId && e.Organizer.UserId == userId)
-                .FirstOrDefaultAsync();
-
-            if (eventExists == null)
-            {
-                return NotFound(new { message = "Event not found or access denied" });
-            }
-
             try
             {
+                // Get event details (no authorization check - caller already validated)
+                var eventItem = await _context.Events.FindAsync(eventId);
+                if (eventItem == null) return null;
+
                 // Get organizer ticket payment data
                 var organizerPayments = await _context.OrganizerTicketPayments
                     .Where(otp => otp.EventId == eventId)
@@ -936,10 +1014,10 @@ namespace EventBooking.API.Controllers
                     ? Math.Round((decimal)totalPaid / totalIssued * 100, 1)
                     : 0;
 
-                var result = new EventBooking.API.DTOs.OrganizerRevenueDTO
+                return new EventBooking.API.DTOs.OrganizerRevenueDTO
                 {
                     EventId = eventId,
-                    EventTitle = eventExists.Title ?? "Unknown Event",
+                    EventTitle = eventItem.Title ?? "Unknown Event",
                     TicketTypes = organizerTicketTypes,
                     TotalIssued = totalIssued,
                     TotalPaid = totalPaid,
@@ -949,14 +1027,17 @@ namespace EventBooking.API.Controllers
                     UnpaidOrganizerRevenue = unpaidRevenue,
                     OverallPaymentPercentage = paymentCompletionRate
                 };
-
-                return Ok(result);
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to retrieve organizer revenue data", error = ex.Message });
+                Console.WriteLine($"Error in GetOrganizerRevenueDataAsync: {ex.Message}");
+                return null;
             }
         }
+
+        // ========================================================================================
+        // END OF PRIVATE HELPER METHODS
+        // ========================================================================================
 
         /// <summary>
         /// Tab 4: Get complete revenue summary combining all data sources
@@ -985,22 +1066,36 @@ namespace EventBooking.API.Controllers
 
             try
             {
-                // Get ticket types with capacity data
+                // Get all ticket types for this event
                 var ticketTypes = await _context.TicketTypes
                     .Where(tt => tt.EventId == eventId)
-                    .Select(tt => new
-                    {
-                        tt.Id,
-                        tt.Name,
-                        tt.Price,
-                        TotalCapacity = _context.Seats
-                            .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId)
-                            .Count(),
-                        SoldTickets = _context.Seats
-                            .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId && s.IsReserved == true)
-                            .Count()
-                    })
                     .ToListAsync();
+
+                // Calculate capacity and sold tickets for each type (works for ALL event types)
+                var ticketTypeData = new List<(int Id, string Name, decimal Price, int TotalCapacity, int SoldTickets)>();
+                
+                foreach (var tt in ticketTypes)
+                {
+                    // Get sold tickets using TicketAvailabilityService (works for ALL event types)
+                    var soldTickets = await _ticketAvailabilityService.GetTicketsSoldAsync(tt.Id);
+                    
+                    // Determine total capacity based on event type
+                    int totalCapacity;
+                    if (tt.MaxTickets.HasValue)
+                    {
+                        // General Admission or Standing tickets
+                        totalCapacity = tt.MaxTickets.Value;
+                    }
+                    else
+                    {
+                        // Seated tickets (count Seat records, excluding Unavailable seats)
+                        totalCapacity = await _context.Seats
+                            .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId && s.Status != SeatStatus.Unavailable)
+                            .CountAsync();
+                    }
+                    
+                    ticketTypeData.Add((tt.Id, tt.Name, tt.Price, totalCapacity, soldTickets));
+                }
 
                 // Get organizer revenue data
                 var organizerPayments = await _context.OrganizerTicketPayments
@@ -1018,10 +1113,10 @@ namespace EventBooking.API.Controllers
                 var organizerTicketCount = organizerPayments.Sum(x => x.Count);
 
                 // Calculate totals
-                var maxPossibleRevenue = ticketTypes.Sum(tt => tt.Price * tt.TotalCapacity);
-                var totalCapacity = ticketTypes.Sum(tt => tt.TotalCapacity);
-                var totalSold = ticketTypes.Sum(tt => tt.SoldTickets);
-                var actualRevenue = ticketTypes.Sum(tt => tt.Price * tt.SoldTickets);
+                var maxPossibleRevenue = ticketTypeData.Sum(tt => tt.Price * tt.TotalCapacity);
+                var combinedTotalCapacity = ticketTypeData.Sum(tt => tt.TotalCapacity);
+                var totalSold = ticketTypeData.Sum(tt => tt.SoldTickets);
+                var actualRevenue = ticketTypeData.Sum(tt => tt.Price * tt.SoldTickets);
                 var stripeRevenue = actualRevenue - organizerRevenue;
                 var stripeTicketCount = totalSold - organizerTicketCount;
 
@@ -1032,8 +1127,8 @@ namespace EventBooking.API.Controllers
                 // Calculate percentages
                 var totalRevenue = stripeRevenue + organizerRevenue;
                 var remainingCapacityValue = maxPossibleRevenue - totalRevenue;
-                var utilizationPercentage = totalCapacity > 0 
-                    ? Math.Round((decimal)totalSold / totalCapacity * 100, 1) 
+                var utilizationPercentage = combinedTotalCapacity > 0 
+                    ? Math.Round((decimal)totalSold / combinedTotalCapacity * 100, 1) 
                     : 0;
 
                 var kiwiLankaPercentage = totalRevenue > 0 
@@ -1044,45 +1139,45 @@ namespace EventBooking.API.Controllers
                     : 0;
 
                 // Create Panel 1: Max Possible Revenue
-                var maxRevenueItems = ticketTypes.Select(tt => new RevenueBreakdownItemDTO
+                var maxRevenueItems = ticketTypeData.Select(ttData => new RevenueBreakdownItemDTO
                 {
-                    TicketTypeName = tt.Name ?? "Unknown",
-                    TicketPrice = tt.Price,
-                    Quantity = tt.TotalCapacity,
-                    Revenue = tt.Price * tt.TotalCapacity,
-                    FormattedLine = $"{tt.Name}: ${tt.Price:F2} × {tt.TotalCapacity} = ${tt.Price * tt.TotalCapacity:F2}"
+                    TicketTypeName = ttData.Name ?? "Unknown",
+                    TicketPrice = ttData.Price,
+                    Quantity = ttData.TotalCapacity,
+                    Revenue = ttData.Price * ttData.TotalCapacity,
+                    FormattedLine = $"{ttData.Name}: ${ttData.Price:F2} × {ttData.TotalCapacity} = ${ttData.Price * ttData.TotalCapacity:F2}"
                 }).ToList();
 
                 // Create Panel 2: KiwiLanka Revenue (Stripe)
-                var kiwiLankaItems = ticketTypes.Select(tt => {
-                    var organizerCountForType = organizerPayments.FirstOrDefault(op => op.TicketTypeId == tt.Id)?.Count ?? 0;
-                    var kiwiLankaCount = tt.SoldTickets - organizerCountForType;
+                var kiwiLankaItems = ticketTypeData.Select(ttData => {
+                    var organizerCountForType = organizerPayments.FirstOrDefault(op => op.TicketTypeId == ttData.Id)?.Count ?? 0;
+                    var kiwiLankaCount = ttData.SoldTickets - organizerCountForType;
                     kiwiLankaCount = Math.Max(0, kiwiLankaCount);
-                    var revenue = tt.Price * kiwiLankaCount;
+                    var revenue = ttData.Price * kiwiLankaCount;
                     
                     return new RevenueBreakdownItemDTO
                     {
-                        TicketTypeName = tt.Name ?? "Unknown",
-                        TicketPrice = tt.Price,
+                        TicketTypeName = ttData.Name ?? "Unknown",
+                        TicketPrice = ttData.Price,
                         Quantity = kiwiLankaCount,
                         Revenue = revenue,
-                        FormattedLine = $"{tt.Name}: ${tt.Price:F2} × {kiwiLankaCount} = ${revenue:F2}"
+                        FormattedLine = $"{ttData.Name}: ${ttData.Price:F2} × {kiwiLankaCount} = ${revenue:F2}"
                     };
                 }).Where(item => item.Quantity > 0).ToList();
 
                 // Create Panel 3: Organizer Revenue
-                var organizerItems = ticketTypes.Select(tt => {
-                    var organizerData = organizerPayments.FirstOrDefault(op => op.TicketTypeId == tt.Id);
+                var organizerItems = ticketTypeData.Select(ttData => {
+                    var organizerData = organizerPayments.FirstOrDefault(op => op.TicketTypeId == ttData.Id);
                     var count = organizerData?.Count ?? 0;
                     var revenue = organizerData?.Revenue ?? 0;
                     
                     return new RevenueBreakdownItemDTO
                     {
-                        TicketTypeName = tt.Name ?? "Unknown",
-                        TicketPrice = tt.Price,
+                        TicketTypeName = ttData.Name ?? "Unknown",
+                        TicketPrice = ttData.Price,
                         Quantity = count,
                         Revenue = revenue,
-                        FormattedLine = $"{tt.Name}: ${tt.Price:F2} × {count} = ${revenue:F2}"
+                        FormattedLine = $"{ttData.Name}: ${ttData.Price:F2} × {count} = ${revenue:F2}"
                     };
                 }).Where(item => item.Quantity > 0).ToList();
 
