@@ -363,3 +363,7 @@ MigrationBackup/
 FodyWeavers.xsd
 /EventBooking.API/wwwroot
 EventBooking.API/appsettings.Test.json
+
+# Production build releases (temporary)
+production-release-*/
+
