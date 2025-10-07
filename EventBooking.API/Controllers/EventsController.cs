@@ -547,7 +547,7 @@ namespace EventBooking.API.Controllers
         /// </summary>
         [Authorize(Roles = "Organizer")]
         [HttpGet("{eventId}/ticket-capacity")]
-        public async Task<ActionResult<List<TicketCapacityDTO>>> GetTicketCapacity(int eventId)
+        public async Task<ActionResult<TicketCapacityResponseDTO>> GetTicketCapacity(int eventId)
         {
             var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (userId == null)
@@ -577,9 +577,9 @@ namespace EventBooking.API.Controllers
                 // Get Organizer revenue data (Tab 03) - contains issued tickets per ticket type
                 var organizerRevenue = await GetOrganizerRevenueDataAsync(eventId);
                 
-                // Get all ticket types for this event
+                // Get all ticket types for this event (exclude $0 tickets)
                 var ticketTypes = await _context.TicketTypes
-                    .Where(tt => tt.EventId == eventId)
+                    .Where(tt => tt.EventId == eventId && tt.Price > 0)
                     .ToListAsync();
 
                 var ticketCapacityList = new List<TicketCapacityDTO>();
@@ -610,10 +610,17 @@ namespace EventBooking.API.Controllers
                     
                     // Determine total capacity based on event type
                     int totalCapacity;
+                    int reservedTickets = 0;
+                    
                     if (tt.MaxTickets.HasValue)
                     {
                         // General Admission or Standing tickets (uses MaxTickets)
                         totalCapacity = tt.MaxTickets.Value;
+                        // For general admission, reserved count is based on Status.Booked seats minus sold tickets
+                        var bookedSeatsCount = await _context.Seats
+                            .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId && s.Status == SeatStatus.Booked)
+                            .CountAsync();
+                        reservedTickets = Math.Max(0, bookedSeatsCount - soldTickets);
                     }
                     else
                     {
@@ -621,9 +628,16 @@ namespace EventBooking.API.Controllers
                         totalCapacity = await _context.Seats
                             .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId && s.Status != SeatStatus.Unavailable)
                             .CountAsync();
+                        
+                        // Reserved = Seats with Status.Booked - Sold Count
+                        var bookedSeatsCount = await _context.Seats
+                            .Where(s => s.TicketTypeId == tt.Id && s.EventId == eventId && s.Status == SeatStatus.Booked)
+                            .CountAsync();
+                        reservedTickets = Math.Max(0, bookedSeatsCount - soldTickets);
                     }
                     
-                    var availableTickets = totalCapacity - soldTickets;
+                    // Available = Total Capacity - (Sold + Reserved)
+                    var availableTickets = totalCapacity - (soldTickets + reservedTickets);
                     var utilization = totalCapacity > 0 
                         ? Math.Round((decimal)soldTickets / totalCapacity * 100, 1)
                         : 0;
@@ -634,6 +648,7 @@ namespace EventBooking.API.Controllers
                         TicketTypeName = tt.Name ?? "Unknown",
                         TicketPrice = tt.Price,
                         SoldTickets = soldTickets,
+                        ReservedTickets = reservedTickets,
                         AvailableTickets = availableTickets,
                         TotalCapacity = totalCapacity,
                         UtilizationPercentage = utilization,
@@ -641,7 +656,29 @@ namespace EventBooking.API.Controllers
                     });
                 }
 
-                return Ok(ticketCapacityList);
+                // Sort by ticket price descending (most expensive first)
+                var sortedList = ticketCapacityList.OrderByDescending(tc => tc.TicketPrice).ToList();
+
+                // Calculate summary totals
+                var summary = new TicketCapacitySummaryDTO
+                {
+                    TotalSoldTickets = sortedList.Sum(tc => tc.SoldTickets),
+                    TotalReservedTickets = sortedList.Sum(tc => tc.ReservedTickets),
+                    TotalAvailableTickets = sortedList.Sum(tc => tc.AvailableTickets),
+                    TotalMaxCapacity = sortedList.Sum(tc => tc.TotalCapacity),
+                    OverallUtilizationPercentage = sortedList.Sum(tc => tc.TotalCapacity) > 0
+                        ? Math.Round((decimal)sortedList.Sum(tc => tc.SoldTickets) / sortedList.Sum(tc => tc.TotalCapacity) * 100, 1)
+                        : 0
+                };
+
+                // Return response with summary and ticket types
+                var response = new TicketCapacityResponseDTO
+                {
+                    Summary = summary,
+                    TicketTypes = sortedList
+                };
+
+                return Ok(response);
             }
             catch (Exception ex)
             {
@@ -927,7 +964,7 @@ namespace EventBooking.API.Controllers
                 {
                     EventId = eventId,
                     EventTitle = eventTitle,
-                    PricingTiers = priceGroups.Values.OrderByDescending(p => p.TicketPrice).ToList(),
+                    PricingTiers = priceGroups.Values.Where(p => p.TicketPrice > 0).OrderByDescending(p => p.TicketPrice).ToList(),
                     TotalStripeRevenue = totalTicketRevenue,
                     TotalStripeTickets = totalTickets,
                     TotalStripeTransactions = totalTransactions,
@@ -974,6 +1011,12 @@ namespace EventBooking.API.Controllers
                     })
                     .ToListAsync();
 
+                // Calculate total transaction count (unique combinations of customer and booking)
+                var totalTransactions = await _context.OrganizerTicketPayments
+                    .Where(otp => otp.EventId == eventId)
+                    .GroupBy(otp => new { otp.BookingLineItemId, otp.CustomerEmail, otp.CustomerFirstName, otp.CustomerLastName })
+                    .CountAsync();
+
                 // Get ticket type details
                 var ticketTypes = await _context.TicketTypes
                     .Where(tt => tt.EventId == eventId)
@@ -1003,6 +1046,12 @@ namespace EventBooking.API.Controllers
                     };
                 }).ToList();
 
+                // Sort by ticket price descending (most expensive first) and filter out $0 tickets
+                organizerTicketTypes = organizerTicketTypes
+                    .Where(ott => ott.TicketPrice > 0)
+                    .OrderByDescending(ott => ott.TicketPrice)
+                    .ToList();
+
                 // Calculate summary totals
                 var totalIssued = organizerTicketTypes.Sum(ott => ott.IssuedTickets);
                 var totalPaid = organizerTicketTypes.Sum(ott => ott.PaidTickets);
@@ -1022,6 +1071,7 @@ namespace EventBooking.API.Controllers
                     TotalIssued = totalIssued,
                     TotalPaid = totalPaid,
                     TotalUnpaid = totalUnpaid,
+                    TotalTransactions = totalTransactions, // Add transaction count
                     TotalOrganizerRevenue = totalOrganizerRevenue,
                     PaidOrganizerRevenue = paidRevenue,
                     UnpaidOrganizerRevenue = unpaidRevenue,
@@ -1066,19 +1116,20 @@ namespace EventBooking.API.Controllers
 
             try
             {
-                // Get all ticket types for this event
+                // 🎯 REUSE Tab 02 and Tab 03 data instead of recalculating
+                var stripeRevenueData = await GetStripeRevenueDataAsync(eventId);
+                var organizerRevenueData = await GetOrganizerRevenueDataAsync(eventId);
+
+                // Get all ticket types for this event (exclude $0 tickets)
                 var ticketTypes = await _context.TicketTypes
-                    .Where(tt => tt.EventId == eventId)
+                    .Where(tt => tt.EventId == eventId && tt.Price > 0)
                     .ToListAsync();
 
-                // Calculate capacity and sold tickets for each type (works for ALL event types)
-                var ticketTypeData = new List<(int Id, string Name, decimal Price, int TotalCapacity, int SoldTickets)>();
+                // Calculate capacity for each type
+                var ticketTypeData = new List<(int Id, string Name, decimal Price, int TotalCapacity)>();
                 
                 foreach (var tt in ticketTypes)
                 {
-                    // Get sold tickets using TicketAvailabilityService (works for ALL event types)
-                    var soldTickets = await _ticketAvailabilityService.GetTicketsSoldAsync(tt.Id);
-                    
                     // Determine total capacity based on event type
                     int totalCapacity;
                     if (tt.MaxTickets.HasValue)
@@ -1094,39 +1145,69 @@ namespace EventBooking.API.Controllers
                             .CountAsync();
                     }
                     
-                    ticketTypeData.Add((tt.Id, tt.Name, tt.Price, totalCapacity, soldTickets));
+                    ticketTypeData.Add((tt.Id, tt.Name ?? "Unknown", tt.Price, totalCapacity));
                 }
 
-                // Get organizer revenue data
-                var organizerPayments = await _context.OrganizerTicketPayments
-                    .Where(otp => otp.EventId == eventId)
-                    .GroupBy(otp => otp.TicketTypeId)
-                    .Select(g => new
-                    {
-                        TicketTypeId = g.Key,
-                        Count = g.Count(),
-                        Revenue = g.Sum(x => x.TicketPrice)
-                    })
-                    .ToListAsync();
-
-                var organizerRevenue = organizerPayments.Sum(x => x.Revenue);
-                var organizerTicketCount = organizerPayments.Sum(x => x.Count);
-
-                // Calculate totals
+                // Calculate Max Possible Revenue
                 var maxPossibleRevenue = ticketTypeData.Sum(tt => tt.Price * tt.TotalCapacity);
-                var combinedTotalCapacity = ticketTypeData.Sum(tt => tt.TotalCapacity);
-                var totalSold = ticketTypeData.Sum(tt => tt.SoldTickets);
-                var actualRevenue = ticketTypeData.Sum(tt => tt.Price * tt.SoldTickets);
-                var stripeRevenue = actualRevenue - organizerRevenue;
-                var stripeTicketCount = totalSold - organizerTicketCount;
 
-                // Ensure no negative values
-                stripeRevenue = Math.Max(0, stripeRevenue);
-                stripeTicketCount = Math.Max(0, stripeTicketCount);
+                // Create Panel 1: Max Possible Revenue
+                var maxRevenueItems = ticketTypeData.Select(ttData => new RevenueBreakdownItemDTO
+                {
+                    TicketTypeName = ttData.Name,
+                    TicketPrice = ttData.Price,
+                    Quantity = ttData.TotalCapacity,
+                    Revenue = ttData.Price * ttData.TotalCapacity,
+                    FormattedLine = $"{ttData.Name}: ${ttData.Price:F2} × {ttData.TotalCapacity} = ${ttData.Price * ttData.TotalCapacity:F2}"
+                }).OrderByDescending(item => item.TicketPrice).ToList();
 
-                // Calculate percentages
+                // Create Panel 2: KiwiLanka Revenue (from Tab 02 - Stripe data)
+                var kiwiLankaItems = new List<RevenueBreakdownItemDTO>();
+                var stripeRevenue = 0m;
+                var stripeTicketCount = 0;
+
+                if (stripeRevenueData != null && stripeRevenueData.PricingTiers != null)
+                {
+                    // Use Tab 02 pricing tiers directly
+                    kiwiLankaItems = stripeRevenueData.PricingTiers.Select(tier => new RevenueBreakdownItemDTO
+                    {
+                        TicketTypeName = $"Ticket at ${tier.TicketPrice:F2}",
+                        TicketPrice = tier.TicketPrice,
+                        Quantity = tier.Quantity,
+                        Revenue = tier.Revenue,
+                        FormattedLine = $"${tier.TicketPrice:F2} tickets: ${tier.TicketPrice:F2} × {tier.Quantity} = ${tier.Revenue:F2}"
+                    }).OrderByDescending(item => item.TicketPrice).ToList();
+
+                    stripeRevenue = stripeRevenueData.TotalStripeRevenue;
+                    stripeTicketCount = stripeRevenueData.TotalStripeTickets;
+                }
+
+                // Create Panel 3: Organizer Revenue (from Tab 03)
+                var organizerItems = new List<RevenueBreakdownItemDTO>();
+                var organizerRevenue = 0m;
+                var organizerTicketCount = 0;
+
+                if (organizerRevenueData != null && organizerRevenueData.TicketTypes != null)
+                {
+                    organizerItems = organizerRevenueData.TicketTypes.Select(ott => new RevenueBreakdownItemDTO
+                    {
+                        TicketTypeName = ott.TicketTypeName,
+                        TicketPrice = ott.TicketPrice,
+                        Quantity = ott.IssuedTickets,
+                        Revenue = ott.TotalRevenue,
+                        FormattedLine = $"{ott.TicketTypeName}: ${ott.TicketPrice:F2} × {ott.IssuedTickets} = ${ott.TotalRevenue:F2}"
+                    }).Where(item => item.Quantity > 0).OrderByDescending(item => item.TicketPrice).ToList();
+
+                    organizerRevenue = organizerRevenueData.TotalOrganizerRevenue;
+                    organizerTicketCount = organizerRevenueData.TotalIssued;
+                }
+
+                // Calculate combined totals
                 var totalRevenue = stripeRevenue + organizerRevenue;
+                var totalSold = stripeTicketCount + organizerTicketCount;
+                var combinedTotalCapacity = ticketTypeData.Sum(tt => tt.TotalCapacity);
                 var remainingCapacityValue = maxPossibleRevenue - totalRevenue;
+                
                 var utilizationPercentage = combinedTotalCapacity > 0 
                     ? Math.Round((decimal)totalSold / combinedTotalCapacity * 100, 1) 
                     : 0;
@@ -1136,57 +1217,6 @@ namespace EventBooking.API.Controllers
                     : 0;
                 var organizerPercentage = totalRevenue > 0 
                     ? Math.Round(organizerRevenue / totalRevenue * 100, 1) 
-                    : 0;
-
-                // Create Panel 1: Max Possible Revenue
-                var maxRevenueItems = ticketTypeData.Select(ttData => new RevenueBreakdownItemDTO
-                {
-                    TicketTypeName = ttData.Name ?? "Unknown",
-                    TicketPrice = ttData.Price,
-                    Quantity = ttData.TotalCapacity,
-                    Revenue = ttData.Price * ttData.TotalCapacity,
-                    FormattedLine = $"{ttData.Name}: ${ttData.Price:F2} × {ttData.TotalCapacity} = ${ttData.Price * ttData.TotalCapacity:F2}"
-                }).ToList();
-
-                // Create Panel 2: KiwiLanka Revenue (Stripe)
-                var kiwiLankaItems = ticketTypeData.Select(ttData => {
-                    var organizerCountForType = organizerPayments.FirstOrDefault(op => op.TicketTypeId == ttData.Id)?.Count ?? 0;
-                    var kiwiLankaCount = ttData.SoldTickets - organizerCountForType;
-                    kiwiLankaCount = Math.Max(0, kiwiLankaCount);
-                    var revenue = ttData.Price * kiwiLankaCount;
-                    
-                    return new RevenueBreakdownItemDTO
-                    {
-                        TicketTypeName = ttData.Name ?? "Unknown",
-                        TicketPrice = ttData.Price,
-                        Quantity = kiwiLankaCount,
-                        Revenue = revenue,
-                        FormattedLine = $"{ttData.Name}: ${ttData.Price:F2} × {kiwiLankaCount} = ${revenue:F2}"
-                    };
-                }).Where(item => item.Quantity > 0).ToList();
-
-                // Create Panel 3: Organizer Revenue
-                var organizerItems = ticketTypeData.Select(ttData => {
-                    var organizerData = organizerPayments.FirstOrDefault(op => op.TicketTypeId == ttData.Id);
-                    var count = organizerData?.Count ?? 0;
-                    var revenue = organizerData?.Revenue ?? 0;
-                    
-                    return new RevenueBreakdownItemDTO
-                    {
-                        TicketTypeName = ttData.Name ?? "Unknown",
-                        TicketPrice = ttData.Price,
-                        Quantity = count,
-                        Revenue = revenue,
-                        FormattedLine = $"{ttData.Name}: ${ttData.Price:F2} × {count} = ${revenue:F2}"
-                    };
-                }).Where(item => item.Quantity > 0).ToList();
-
-                // Calculate estimated fees
-                var estimatedPlatformCommission = stripeRevenue * 0.05m; // 5% commission
-                var estimatedStripeFees = stripeRevenue * 0.029m; // 2.9% Stripe fees
-                var estimatedNetToOrganizer = totalRevenue - estimatedPlatformCommission - estimatedStripeFees;
-                var estimatedNetPercentage = totalRevenue > 0 
-                    ? Math.Round(estimatedNetToOrganizer / totalRevenue * 100, 1) 
                     : 0;
 
                 var result = new EventBooking.API.DTOs.RevenueSummaryDTO
@@ -1222,11 +1252,7 @@ namespace EventBooking.API.Controllers
                         OrganizerPercentage = organizerPercentage,
                         TotalRevenue = totalRevenue,
                         RemainingCapacityValue = remainingCapacityValue,
-                        OverallEventUtilization = utilizationPercentage,
-                        EstimatedPlatformCommission = estimatedPlatformCommission,
-                        EstimatedStripeFees = estimatedStripeFees,
-                        EstimatedNetToOrganizer = estimatedNetToOrganizer,
-                        EstimatedNetPercentage = estimatedNetPercentage
+                        OverallEventUtilization = utilizationPercentage
                     },
                     GeneratedAt = DateTime.UtcNow
                 };

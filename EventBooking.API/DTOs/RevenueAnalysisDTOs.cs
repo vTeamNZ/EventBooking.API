@@ -11,10 +11,32 @@ namespace EventBooking.API.DTOs
         public string TicketTypeName { get; set; } = string.Empty;
         public decimal TicketPrice { get; set; }
         public int SoldTickets { get; set; }
+        public int ReservedTickets { get; set; }
         public int AvailableTickets { get; set; }
         public int TotalCapacity { get; set; }
         public decimal UtilizationPercentage { get; set; }
         public string Color { get; set; } = "#007bff"; // For UI display
+    }
+
+    /// <summary>
+    /// Summary totals for all ticket types (Tab 1)
+    /// </summary>
+    public class TicketCapacitySummaryDTO
+    {
+        public int TotalSoldTickets { get; set; }
+        public int TotalReservedTickets { get; set; }
+        public int TotalAvailableTickets { get; set; }
+        public int TotalMaxCapacity { get; set; }
+        public decimal OverallUtilizationPercentage { get; set; }
+    }
+
+    /// <summary>
+    /// Response wrapper for Tab 1 containing summary and detailed ticket types
+    /// </summary>
+    public class TicketCapacityResponseDTO
+    {
+        public TicketCapacitySummaryDTO Summary { get; set; } = new();
+        public List<TicketCapacityDTO> TicketTypes { get; set; } = new();
     }
 
     /// <summary>
@@ -72,6 +94,7 @@ namespace EventBooking.API.DTOs
         public int TotalIssued { get; set; }
         public int TotalPaid { get; set; }
         public int TotalUnpaid { get; set; }
+        public int TotalTransactions { get; set; } // New field for transaction count
         public decimal TotalOrganizerRevenue { get; set; }
         public decimal PaidOrganizerRevenue { get; set; }
         public decimal UnpaidOrganizerRevenue { get; set; }
@@ -127,12 +150,6 @@ namespace EventBooking.API.DTOs
         public decimal TotalRevenue { get; set; }
         public decimal RemainingCapacityValue { get; set; }
         public decimal OverallEventUtilization { get; set; }
-        
-        // Estimated fees and commissions
-        public decimal EstimatedPlatformCommission { get; set; }
-        public decimal EstimatedStripeFees { get; set; }
-        public decimal EstimatedNetToOrganizer { get; set; }
-        public decimal EstimatedNetPercentage { get; set; }
     }
 
     /// <summary>
