@@ -138,6 +138,40 @@ namespace EventBooking.API.Controllers
                 return StatusCode(500, new { error = "Failed to check ticket availability", details = ex.Message });
             }
         }
+
+        /// <summary>
+        /// 🎯 NEW v6 - Get detailed breakdown of Stripe vs Organizer tickets for debugging
+        /// Shows separated counts to verify no double counting
+        /// </summary>
+        [HttpGet("ticket-type/{ticketTypeId}/breakdown")]
+        [AllowAnonymous]
+        public async Task<ActionResult<TicketBreakdownInfo>> GetTicketBreakdown(int ticketTypeId)
+        {
+            try
+            {
+                var stripeTickets = await _ticketAvailabilityService.GetStripeTicketsSoldAsync(ticketTypeId);
+                var organizerTickets = await _ticketAvailabilityService.GetOrganizerTicketsSoldAsync(ticketTypeId);
+                var totalSold = await _ticketAvailabilityService.GetTicketsSoldAsync(ticketTypeId);
+                var available = await _ticketAvailabilityService.GetTicketsAvailableAsync(ticketTypeId);
+                
+                var result = new TicketBreakdownInfo
+                {
+                    TicketTypeId = ticketTypeId,
+                    StripeTickets = stripeTickets,
+                    OrganizerTickets = organizerTickets,
+                    TotalSold = totalSold,
+                    Available = available,
+                    HasLimit = available != -1,
+                    CalculationNote = "Total = Stripe + Organizer (no double counting)"
+                };
+                
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = "Failed to get ticket breakdown", details = ex.Message });
+            }
+        }
     }
 
     // DTOs for API responses
@@ -162,5 +196,19 @@ namespace EventBooking.API.Controllers
     {
         public int TicketTypeId { get; set; }
         public int RequestedQuantity { get; set; }
+    }
+
+    /// <summary>
+    /// 🎯 NEW v6 - DTO for separated ticket count breakdown (debugging)
+    /// </summary>
+    public class TicketBreakdownInfo
+    {
+        public int TicketTypeId { get; set; }
+        public int StripeTickets { get; set; }
+        public int OrganizerTickets { get; set; }
+        public int TotalSold { get; set; }
+        public int Available { get; set; }
+        public bool HasLimit { get; set; }
+        public string CalculationNote { get; set; } = string.Empty;
     }
 }
