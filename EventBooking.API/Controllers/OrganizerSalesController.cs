@@ -245,138 +245,66 @@ namespace EventBooking.API.Controllers
                 }
 
                 // Verify this event belongs to the organizer
-                var eventExists = await _context.Events
-                    .AnyAsync(e => e.Id == eventId && e.OrganizerId == organizer.Id);
+                var eventItem = await _context.Events
+                    .FirstOrDefaultAsync(e => e.Id == eventId && e.OrganizerId == organizer.Id);
 
-                if (!eventExists)
+                if (eventItem == null)
                 {
                     return NotFound(new { message = "Event not found or you don't have permission to view it." });
                 }
 
-                var query = _context.Bookings
-                    .Include(b => b.BookingLineItems)
-                    .Where(b => b.EventId == eventId);
-
                 _logger.LogInformation("GetEventBookings called with eventId: {EventId}, page: {Page}, pageSize: {PageSize}, search: '{Search}', paymentStatus: '{PaymentStatus}'", 
                     eventId, page, pageSize, search ?? "null", paymentStatus ?? "null");
 
-                // Get initial count before filters
-                var initialCount = await _context.Bookings.Where(b => b.EventId == eventId).CountAsync();
-                _logger.LogInformation("Initial booking count for event {EventId}: {InitialCount}", eventId, initialCount);
+                List<BookingDetailViewDTO> bookings;
+                int totalCount;
 
-                // Log distinct payment statuses for debugging
-                var distinctPaymentStatuses = await _context.Bookings
-                    .Where(b => b.EventId == eventId)
-                    .Select(b => b.PaymentStatus)
-                    .Distinct()
-                    .ToListAsync();
-                _logger.LogInformation("Distinct payment statuses for event {EventId}: {PaymentStatuses}", 
-                    eventId, string.Join(", ", distinctPaymentStatuses));
-
-                // Apply search filter
-                if (!string.IsNullOrEmpty(search))
-                {
-                    query = query.Where(b => 
-                        b.CustomerFirstName.Contains(search) ||
-                        b.CustomerLastName.Contains(search) ||
-                        b.CustomerEmail.Contains(search) ||
-                        b.PaymentIntentId.Contains(search));
-                    _logger.LogInformation("Applied search filter for: {Search}", search);
-                }
-
-                // Apply payment status filter
+                // Route to appropriate data source based on payment status
                 if (!string.IsNullOrEmpty(paymentStatus))
                 {
-                    _logger.LogInformation("Filtering by payment status: {PaymentStatus}", paymentStatus);
+                    var statusLower = paymentStatus.ToLower().Trim();
                     
-                    // Map frontend filter values to database values
-                    switch (paymentStatus.ToLower().Trim())
+                    if (statusLower == "succeeded" || statusLower == "paid" || statusLower == "paid only" || statusLower == "completed")
                     {
-                        case "succeeded":
-                        case "paid":
-                        case "paid only":
-                        case "completed":
-                            // Frontend sends various paid statuses - map to database values
-                            query = query.Where(b => b.PaymentStatus == "succeeded" || b.PaymentStatus == "Completed");
-                            _logger.LogInformation("Filtering for paid bookings (succeeded/Completed)");
-                            break;
-                        case "organizerdirect":
-                        case "organizer direct":
-                        case "organizer guests":
-                        case "organizer":
-                            query = query.Where(b => b.PaymentStatus == "OrganizerDirect");
-                            _logger.LogInformation("Filtering for organizer direct bookings");
-                            break;
-                        case "all":
-                        case "":
-                            // Show all bookings - don't apply filter
-                            _logger.LogInformation("Showing all bookings - no payment filter applied");
-                            break;
-                        default:
-                            // Exact match for any other status
-                            query = query.Where(b => b.PaymentStatus == paymentStatus);
-                            _logger.LogInformation("Filtering for exact payment status: {PaymentStatus}", paymentStatus);
-                            break;
+                        // PAID ONLY: Fetch from Stripe API (source of truth)
+                        _logger.LogInformation("Fetching PAID bookings from Stripe API for event {EventId}", eventId);
+                        var stripeResult = await GetStripeBasedBookings(eventItem, page, pageSize, search);
+                        bookings = stripeResult.Bookings;
+                        totalCount = stripeResult.TotalCount;
+                    }
+                    else if (statusLower == "organizerdirect" || statusLower == "organizer direct" || statusLower == "organizer guests" || statusLower == "organizer")
+                    {
+                        // ORGANIZER GUESTS: Fetch from OrganizerTicketPayments table
+                        _logger.LogInformation("Fetching ORGANIZER GUESTS bookings from OrganizerTicketPayments for event {EventId}", eventId);
+                        var organizerResult = await GetOrganizerBasedBookings(eventId, page, pageSize, search);
+                        bookings = organizerResult.Bookings;
+                        totalCount = organizerResult.TotalCount;
+                    }
+                    else
+                    {
+                        // Unknown status - return empty
+                        _logger.LogWarning("Unknown payment status filter: {PaymentStatus}", paymentStatus);
+                        bookings = new List<BookingDetailViewDTO>();
+                        totalCount = 0;
                     }
                 }
-
-                var totalCount = await query.CountAsync();
-                _logger.LogInformation("Total bookings after filters: {TotalCount}", totalCount);
-
-                // First get the data without the seat info processing
-                var bookingData = await query
-                    .OrderByDescending(b => b.CreatedAt)
-                    .Skip((page - 1) * pageSize)
-                    .Take(pageSize)
-                    .Select(b => new
-                    {
-                        BookingId = b.Id,
-                        PaymentId = b.PaymentIntentId,
-                        FirstName = b.CustomerFirstName,
-                        LastName = b.CustomerLastName,
-                        Email = b.CustomerEmail,
-                        Mobile = b.CustomerMobile ?? "",
-                        BookedTime = b.CreatedAt,
-                        PaymentStatus = b.PaymentStatus,
-                        TotalAmount = b.TotalAmount,
-                        TotalTickets = b.BookingLineItems.Where(bli => bli.ItemType == "Ticket").Sum(bli => bli.Quantity),
-                        TicketDetails = b.BookingLineItems
-                            .Where(bli => bli.ItemType == "Ticket")
-                            .Select(bli => new
-                            {
-                                TicketTypeName = bli.ItemName,
-                                Quantity = bli.Quantity,
-                                UnitPrice = bli.UnitPrice,
-                                SeatDetails = bli.SeatDetails
-                            }).ToList(),
-                        IsPaid = b.PaymentStatus == "succeeded" || b.PaymentStatus == "Completed",
-                        IsOrganizerBooking = b.PaymentStatus == "OrganizerDirect"
-                    })
-                    .ToListAsync();
-
-                // Process the seat info after retrieving from database
-                var bookings = bookingData.Select(b => new BookingDetailViewDTO
+                else
                 {
-                    BookingId = b.BookingId,
-                    PaymentId = b.PaymentId,
-                    FirstName = b.FirstName,
-                    LastName = b.LastName,
-                    Email = HashEmail(b.Email), // Hash the email for privacy
-                    Mobile = b.Mobile,
-                    BookedTime = b.BookedTime,
-                    PaymentStatus = b.PaymentStatus,
-                    TotalAmount = b.TotalAmount,
-                    TotalTickets = b.TotalTickets,
-                    TicketDetails = b.TicketDetails.Select(td => new TicketTypeDetailDTO
-                    {
-                        TicketTypeName = td.TicketTypeName,
-                        Quantity = td.Quantity,
-                        UnitPrice = td.UnitPrice,
-                        SeatInfo = ExtractSeatInfo(td.SeatDetails)
-                    }).ToList(),
-                    IsPaid = b.IsPaid,
-                    IsOrganizerBooking = b.IsOrganizerBooking
-                }).ToList();
+                    // ALL: Combine both sources
+                    _logger.LogInformation("Fetching ALL bookings (Stripe + Organizer) for event {EventId}", eventId);
+                    var stripeResult = await GetStripeBasedBookings(eventItem, 1, int.MaxValue, search);
+                    var organizerResult = await GetOrganizerBasedBookings(eventId, 1, int.MaxValue, search);
+                    
+                    var allBookings = stripeResult.Bookings.Concat(organizerResult.Bookings)
+                        .OrderByDescending(b => b.BookedTime)
+                        .ToList();
+                    
+                    totalCount = allBookings.Count;
+                    bookings = allBookings
+                        .Skip((page - 1) * pageSize)
+                        .Take(pageSize)
+                        .ToList();
+                }
 
                 Response.Headers.Add("X-Total-Count", totalCount.ToString());
                 Response.Headers.Add("X-Page", page.ToString());
@@ -388,6 +316,305 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error retrieving bookings for event {EventId}", eventId);
                 return StatusCode(500, new { message = "An error occurred while retrieving bookings" });
+            }
+        }
+
+        /// <summary>
+        /// Fetches paid bookings directly from Stripe API (source of truth)
+        /// </summary>
+        private async Task<(List<BookingDetailViewDTO> Bookings, int TotalCount)> GetStripeBasedBookings(
+            Event eventItem, 
+            int page, 
+            int pageSize, 
+            string? search)
+        {
+            try
+            {
+                // Get Stripe configuration
+                var stripeSecretKey = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY");
+                if (string.IsNullOrEmpty(stripeSecretKey))
+                {
+                    var configuration = HttpContext.RequestServices.GetRequiredService<IConfiguration>();
+                    stripeSecretKey = configuration["Stripe:SecretKey"];
+                }
+
+                if (string.IsNullOrEmpty(stripeSecretKey))
+                {
+                    _logger.LogWarning("Stripe API key not found");
+                    return (new List<BookingDetailViewDTO>(), 0);
+                }
+
+                // Initialize Stripe
+                Stripe.StripeConfiguration.ApiKey = stripeSecretKey;
+                var sessionService = new Stripe.Checkout.SessionService();
+
+                // Fetch all checkout sessions
+                var allSessions = new List<Stripe.Checkout.Session>();
+                var hasMore = true;
+                string? startingAfter = null;
+
+                while (hasMore)
+                {
+                    var options = new Stripe.Checkout.SessionListOptions
+                    {
+                        Limit = 100,
+                        StartingAfter = startingAfter
+                    };
+
+                    var sessionList = await sessionService.ListAsync(options);
+                    allSessions.AddRange(sessionList.Data);
+
+                    hasMore = sessionList.HasMore;
+                    if (hasMore && sessionList.Data.Any())
+                    {
+                        startingAfter = sessionList.Data.Last().Id;
+                    }
+                    else
+                    {
+                        hasMore = false;
+                    }
+                }
+
+                // Filter sessions by event and paid status
+                var eventTitle = eventItem.Title;
+                var relevantSessions = allSessions
+                    .Where(s => s.Metadata != null && 
+                               s.Metadata.ContainsKey("eventTitle") && 
+                               s.Metadata["eventTitle"].Equals(eventTitle, StringComparison.OrdinalIgnoreCase) &&
+                               s.PaymentStatus == "paid")
+                    .ToList();
+
+                _logger.LogInformation("Found {Count} paid Stripe sessions for event {EventTitle}", relevantSessions.Count, eventTitle);
+
+                // Transform Stripe sessions to BookingDetailViewDTO
+                var bookings = new List<BookingDetailViewDTO>();
+                
+                foreach (var session in relevantSessions)
+                {
+                    var booking = MapStripeSessionToBookingDetail(session);
+                    
+                    // Apply search filter if provided
+                    if (!string.IsNullOrEmpty(search))
+                    {
+                        var searchLower = search.ToLower();
+                        if (!booking.FirstName.ToLower().Contains(searchLower) &&
+                            !booking.LastName.ToLower().Contains(searchLower) &&
+                            !booking.Email.ToLower().Contains(searchLower) &&
+                            !booking.PaymentId.ToLower().Contains(searchLower))
+                        {
+                            continue; // Skip this booking
+                        }
+                    }
+                    
+                    bookings.Add(booking);
+                }
+
+                // Sort by booked time (newest first)
+                bookings = bookings.OrderByDescending(b => b.BookedTime).ToList();
+
+                var totalCount = bookings.Count;
+
+                // Apply pagination
+                var paginatedBookings = bookings
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToList();
+
+                return (paginatedBookings, totalCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching Stripe-based bookings for event {EventId}", eventItem.Id);
+                return (new List<BookingDetailViewDTO>(), 0);
+            }
+        }
+
+        /// <summary>
+        /// Maps a Stripe Checkout Session to BookingDetailViewDTO
+        /// </summary>
+        private BookingDetailViewDTO MapStripeSessionToBookingDetail(Stripe.Checkout.Session session)
+        {
+            // Extract customer information from metadata
+            session.Metadata.TryGetValue("customerFirstName", out var firstName);
+            session.Metadata.TryGetValue("customerLastName", out var lastName);
+            session.Metadata.TryGetValue("customerMobile", out var mobile);
+            session.Metadata.TryGetValue("ticketDetails", out var ticketDetailsJson);
+            session.Metadata.TryGetValue("selectedSeats", out var selectedSeats);
+
+            var email = session.CustomerEmail ?? session.Metadata.GetValueOrDefault("customerEmail", "");
+
+            // Parse ticket details
+            var ticketDetails = new List<TicketTypeDetailDTO>();
+            var totalTickets = 0;
+
+            if (!string.IsNullOrEmpty(ticketDetailsJson))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(ticketDetailsJson);
+                    var ticketArray = document.RootElement;
+
+                    if (ticketArray.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var ticketElement in ticketArray.EnumerateArray())
+                        {
+                            var typeName = ticketElement.TryGetProperty("Type", out var typeProperty) 
+                                ? typeProperty.GetString() ?? "Unknown" 
+                                : "Unknown";
+                            
+                            var quantity = ticketElement.TryGetProperty("Quantity", out var quantityProperty) 
+                                ? quantityProperty.GetInt32() 
+                                : 0;
+                            
+                            var unitPrice = ticketElement.TryGetProperty("UnitPrice", out var priceProperty) 
+                                ? priceProperty.GetDecimal() 
+                                : 0m;
+
+                            totalTickets += quantity;
+
+                            ticketDetails.Add(new TicketTypeDetailDTO
+                            {
+                                TicketTypeName = typeName,
+                                Quantity = quantity,
+                                UnitPrice = unitPrice,
+                                SeatInfo = "" // Seats will be extracted separately
+                            });
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to parse ticket details from Stripe session {SessionId}", session.Id);
+                }
+            }
+
+            // Extract seat information from selectedSeats metadata
+            var seatInfo = "";
+            if (!string.IsNullOrEmpty(selectedSeats))
+            {
+                var seats = selectedSeats.Split(';', StringSplitOptions.RemoveEmptyEntries);
+                seatInfo = string.Join(", ", seats);
+            }
+
+            // If we have seat info and ticket details, add it to the first ticket type
+            if (!string.IsNullOrEmpty(seatInfo) && ticketDetails.Any())
+            {
+                ticketDetails[0].SeatInfo = seatInfo;
+            }
+
+            return new BookingDetailViewDTO
+            {
+                BookingId = 0, // Stripe sessions don't have booking IDs
+                PaymentId = session.PaymentIntentId ?? session.Id,
+                FirstName = firstName ?? "",
+                LastName = lastName ?? "",
+                Email = HashEmail(email), // Hash for privacy
+                Mobile = mobile ?? "",
+                BookedTime = session.Created,
+                PaymentStatus = "succeeded",
+                TotalAmount = (decimal)(session.AmountTotal ?? 0) / 100, // Convert from cents
+                TotalTickets = totalTickets,
+                TicketDetails = ticketDetails,
+                IsPaid = true,
+                IsOrganizerBooking = false
+            };
+        }
+
+        /// <summary>
+        /// Fetches organizer guest bookings from OrganizerTicketPayments table
+        /// </summary>
+        private async Task<(List<BookingDetailViewDTO> Bookings, int TotalCount)> GetOrganizerBasedBookings(
+            int eventId, 
+            int page, 
+            int pageSize, 
+            string? search)
+        {
+            try
+            {
+                var query = _context.OrganizerTicketPayments
+                    .Include(otp => otp.TicketType)
+                    .Where(otp => otp.EventId == eventId);
+
+                // Apply search filter
+                if (!string.IsNullOrEmpty(search))
+                {
+                    var searchLower = search.ToLower();
+                    query = query.Where(otp => 
+                        otp.CustomerFirstName.ToLower().Contains(searchLower) ||
+                        (otp.CustomerLastName != null && otp.CustomerLastName.ToLower().Contains(searchLower)) ||
+                        otp.CustomerEmail.ToLower().Contains(searchLower));
+                }
+
+                // Group by customer and booking line item to consolidate multiple tickets per booking
+                var groupedPayments = await query
+                    .OrderByDescending(otp => otp.CreatedAt)
+                    .GroupBy(otp => new { otp.BookingLineItemId, otp.CustomerEmail, otp.CustomerFirstName, otp.CustomerLastName })
+                    .Select(g => new
+                    {
+                        BookingLineItemId = g.Key.BookingLineItemId,
+                        CustomerFirstName = g.Key.CustomerFirstName,
+                        CustomerLastName = g.Key.CustomerLastName,
+                        CustomerEmail = g.Key.CustomerEmail,
+                        CustomerMobile = g.Select(otp => otp.CustomerMobile).FirstOrDefault(),
+                        CreatedAt = g.Min(otp => otp.CreatedAt),
+                        TotalAmount = g.Sum(otp => otp.TicketPrice),
+                        TotalTickets = g.Count(),
+                        TicketDetails = g.Select(otp => new
+                        {
+                            TicketTypeName = otp.TicketType != null ? otp.TicketType.Name : "Unknown",
+                            TicketPrice = otp.TicketPrice,
+                            SeatDetails = otp.SeatDetails
+                        }).ToList()
+                    })
+                    .ToListAsync();
+
+                var totalCount = groupedPayments.Count;
+
+                // Apply pagination
+                var paginatedGroups = groupedPayments
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToList();
+                // Map grouped bookings to DTOs with detailed seat information
+                // Similar to Stripe bookings, show all tickets and their seats
+                var bookings = paginatedGroups.Select(g => new BookingDetailViewDTO
+                {
+                    BookingId = g.BookingLineItemId,
+                    PaymentId = $"ORG-{g.BookingLineItemId}",
+                    FirstName = g.CustomerFirstName,
+                    LastName = g.CustomerLastName ?? "",
+                    Email = HashEmail(g.CustomerEmail),
+                    Mobile = g.CustomerMobile ?? "",
+                    BookedTime = g.CreatedAt,
+                    PaymentStatus = "OrganizerDirect",
+                    TotalAmount = g.TotalAmount,
+                    TotalTickets = g.TotalTickets,
+                    // Group tickets by type and show all seats for each type
+                    TicketDetails = g.TicketDetails
+                        .GroupBy(td => new { td.TicketTypeName, td.TicketPrice })
+                        .Select(tdg => new TicketTypeDetailDTO
+                        {
+                            TicketTypeName = tdg.Key.TicketTypeName,
+                            Quantity = tdg.Count(),
+                            UnitPrice = tdg.Key.TicketPrice,
+                            // Collect ALL seat numbers for this ticket type - similar to Stripe display
+                            SeatInfo = string.Join(", ", tdg
+                                .Where(t => !string.IsNullOrEmpty(t.SeatDetails))
+                                .Select(t => ExtractSeatInfo(t.SeatDetails ?? ""))
+                                .Where(s => !string.IsNullOrEmpty(s))
+                                .OrderBy(s => s))
+                        })
+                        .ToList(),
+                    IsPaid = false,
+                    IsOrganizerBooking = true
+                }).ToList();
+
+                return (bookings, totalCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching organizer-based bookings for event {EventId}", eventId);
+                return (new List<BookingDetailViewDTO>(), 0);
             }
         }
 
@@ -719,6 +946,311 @@ namespace EventBooking.API.Controllers
                 // Return original email if any error occurs
                 return email;
             }
+        }
+
+        // GET: organizer/events/{eventId}/reserved-seats
+        [Authorize(Roles = "Organizer")]
+        [HttpGet("events/{eventId}/reserved-seats")]
+        public async Task<ActionResult<object>> GetEventReservedSeats(
+            int eventId, 
+            [FromQuery] int page = 1, 
+            [FromQuery] int pageSize = 50)
+        {
+            try
+            {
+                var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (userId == null)
+                {
+                    return BadRequest(new { message = "Authentication error. Please try logging in again." });
+                }
+
+                var organizer = await _context.Organizers
+                    .FirstOrDefaultAsync(o => o.UserId == userId);
+
+                if (organizer == null)
+                {
+                    return BadRequest(new { message = "No organizer profile found." });
+                }
+
+                // Verify the event belongs to this organizer
+                var eventExists = await _context.Events
+                    .AnyAsync(e => e.Id == eventId && e.OrganizerId == organizer.Id);
+
+                if (!eventExists)
+                {
+                    return NotFound(new { message = "Event not found or you don't have permission to view it." });
+                }
+
+                // Get the event details for Stripe API calls
+                var eventItem = await _context.Events.FindAsync(eventId);
+                if (eventItem == null)
+                {
+                    return NotFound(new { message = "Event not found." });
+                }
+
+                _logger.LogInformation("Calculating reserved seats for event {EventId}", eventId);
+
+                // Step 1: Get all seat numbers from Stripe bookings (Paid Only)
+                var stripeSeatNumbers = await GetStripeSeatNumbers(eventItem);
+                _logger.LogInformation("Found {Count} seats in Stripe bookings", stripeSeatNumbers.Count);
+
+                // Step 2: Get all seat numbers from Organizer Guests
+                var organizerSeatNumbers = await GetOrganizerSeatNumbers(eventId);
+                _logger.LogInformation("Found {Count} seats in Organizer bookings", organizerSeatNumbers.Count);
+
+                // Step 3: Combine both lists (remove duplicates)
+                var bookedSeatNumbers = stripeSeatNumbers.Union(organizerSeatNumbers, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                _logger.LogInformation("Total unique booked seats to exclude: {Count}", bookedSeatNumbers.Count);
+
+                // Step 4: Get all seats with Status = Booked (2)
+                var reservedSeatsQuery = await _context.Seats
+                    .Include(s => s.TicketType)
+                    .Where(s => s.EventId == eventId && s.Status == SeatStatus.Booked)
+                    .ToListAsync();
+
+                _logger.LogInformation("Found {Count} seats with Status=Booked before filtering", reservedSeatsQuery.Count);
+
+                // Step 5: Filter out seats that are in Paid or Organizer bookings
+                var actualReservedSeats = reservedSeatsQuery
+                    .Where(s => !bookedSeatNumbers.Contains(s.SeatNumber))
+                    .ToList();
+
+                _logger.LogInformation("Found {Count} truly reserved seats after excluding booked seats", actualReservedSeats.Count);
+
+                // Map to DTO
+                var allReservedSeats = actualReservedSeats
+                    .Select(seat => new ReservedSeatViewDTO
+                    {
+                        SeatId = seat.Id,
+                        SeatNumber = seat.SeatNumber,
+                        Row = seat.Row,
+                        Number = seat.Number,
+                        TicketTypeName = seat.TicketType?.Name ?? "Unknown",
+                        SeatPrice = seat.Price,
+                        ReservedUntil = seat.ReservedUntil,
+                        ReservedBy = seat.ReservedBy,
+                        MarkedAsBookedTime = DateTime.UtcNow, // We don't track this, use current time
+                        DaysSinceBooked = 0 // Unknown, default to 0
+                    })
+                    .OrderBy(s => s.TicketTypeName)
+                    .ThenBy(s => s.Row)
+                    .ThenBy(s => s.Number)
+                    .ToList();
+
+                var totalCount = allReservedSeats.Count;
+                _logger.LogInformation("Returning {Count} reserved seats after pagination", totalCount);
+
+                // Apply pagination
+                var paginatedSeats = allReservedSeats
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .ToList();
+
+                return Ok(new
+                {
+                    reservedSeats = paginatedSeats,
+                    totalCount = totalCount,
+                    page = page,
+                    pageSize = pageSize,
+                    totalPages = (int)Math.Ceiling((double)totalCount / pageSize)
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error retrieving reserved seats for event {EventId}", eventId);
+                return StatusCode(500, new { message = "An error occurred while retrieving reserved seats" });
+            }
+        }
+
+        /// <summary>
+        /// Gets all seat numbers from Stripe (Paid Only) bookings
+        /// </summary>
+        private async Task<List<string>> GetStripeSeatNumbers(Event eventItem)
+        {
+            var seatNumbers = new List<string>();
+
+            try
+            {
+                // Get Stripe configuration
+                var stripeSecretKey = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY");
+                if (string.IsNullOrEmpty(stripeSecretKey))
+                {
+                    var configuration = HttpContext.RequestServices.GetRequiredService<IConfiguration>();
+                    stripeSecretKey = configuration["Stripe:SecretKey"];
+                }
+
+                if (string.IsNullOrEmpty(stripeSecretKey))
+                {
+                    _logger.LogWarning("Stripe API key not found for seat extraction");
+                    return seatNumbers;
+                }
+
+                // Initialize Stripe
+                Stripe.StripeConfiguration.ApiKey = stripeSecretKey;
+                var sessionService = new Stripe.Checkout.SessionService();
+
+                // Fetch all checkout sessions
+                var allSessions = new List<Stripe.Checkout.Session>();
+                var hasMore = true;
+                string? startingAfter = null;
+
+                while (hasMore)
+                {
+                    var options = new Stripe.Checkout.SessionListOptions
+                    {
+                        Limit = 100,
+                        StartingAfter = startingAfter
+                    };
+
+                    var sessionList = await sessionService.ListAsync(options);
+                    allSessions.AddRange(sessionList.Data);
+
+                    hasMore = sessionList.HasMore;
+                    if (hasMore && sessionList.Data.Any())
+                    {
+                        startingAfter = sessionList.Data.Last().Id;
+                    }
+                    else
+                    {
+                        hasMore = false;
+                    }
+                }
+
+                // Filter sessions by event and paid status
+                var eventTitle = eventItem.Title;
+                var relevantSessions = allSessions
+                    .Where(s => s.Metadata != null && 
+                               s.Metadata.ContainsKey("eventTitle") && 
+                               s.Metadata["eventTitle"].Equals(eventTitle, StringComparison.OrdinalIgnoreCase) &&
+                               s.PaymentStatus == "paid")
+                    .ToList();
+
+                // Extract seat numbers from each session
+                foreach (var session in relevantSessions)
+                {
+                    if (session.Metadata != null && session.Metadata.ContainsKey("selectedSeats"))
+                    {
+                        var selectedSeats = session.Metadata["selectedSeats"];
+                        if (!string.IsNullOrEmpty(selectedSeats))
+                        {
+                            // Seats are semicolon-separated: "A1;A2;A3"
+                            var seats = selectedSeats.Split(';', StringSplitOptions.RemoveEmptyEntries);
+                            seatNumbers.AddRange(seats.Select(s => s.Trim()));
+                        }
+                    }
+                }
+
+                _logger.LogInformation("Extracted {Count} seat numbers from {SessionCount} Stripe sessions", 
+                    seatNumbers.Count, relevantSessions.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error extracting seat numbers from Stripe for event {EventId}", eventItem.Id);
+            }
+
+            return seatNumbers;
+        }
+
+        /// <summary>
+        /// Gets all seat numbers from Organizer Guests bookings
+        /// </summary>
+        private async Task<List<string>> GetOrganizerSeatNumbers(int eventId)
+        {
+            var seatNumbers = new List<string>();
+
+            try
+            {
+                // Query OrganizerTicketPayments for this event
+                var organizerPayments = await _context.OrganizerTicketPayments
+                    .Where(otp => otp.EventId == eventId && !string.IsNullOrEmpty(otp.SeatDetails))
+                    .ToListAsync();
+
+                // Extract seat numbers from SeatDetails JSON
+                foreach (var payment in organizerPayments)
+                {
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(payment.SeatDetails))
+                        {
+                            // Check if it's a plain seat number (not JSON)
+                            if (!payment.SeatDetails.TrimStart().StartsWith("{") && 
+                                !payment.SeatDetails.TrimStart().StartsWith("["))
+                            {
+                                // Plain seat number like "B342-1"
+                                seatNumbers.Add(payment.SeatDetails.Trim());
+                                continue;
+                            }
+
+                            // Parse as JSON
+                            using var document = JsonDocument.Parse(payment.SeatDetails);
+                            var root = document.RootElement;
+
+                            // Handle allocatedSeats array format (multiple seats in one payment)
+                            if (root.TryGetProperty("allocatedSeats", out var allocatedSeats) && 
+                                allocatedSeats.ValueKind == System.Text.Json.JsonValueKind.Array)
+                            {
+                                var seats = allocatedSeats.EnumerateArray()
+                                    .Select(s => s.GetString() ?? "")
+                                    .Where(s => !string.IsNullOrEmpty(s))
+                                    .ToList();
+                                
+                                seatNumbers.AddRange(seats);
+                                continue;
+                            }
+
+                            // Handle allocatedTickets array format
+                            if (root.TryGetProperty("allocatedTickets", out var allocatedTickets) && 
+                                allocatedTickets.ValueKind == System.Text.Json.JsonValueKind.Array)
+                            {
+                                var tickets = allocatedTickets.EnumerateArray()
+                                    .Select(t => t.GetString() ?? "")
+                                    .Where(t => !string.IsNullOrEmpty(t))
+                                    .ToList();
+                                
+                                seatNumbers.AddRange(tickets);
+                                continue;
+                            }
+
+                            // Handle single seatNumber field
+                            if (root.TryGetProperty("seatNumber", out var seatNumberProp))
+                            {
+                                var seatNumber = seatNumberProp.GetString();
+                                if (!string.IsNullOrEmpty(seatNumber))
+                                {
+                                    seatNumbers.Add(seatNumber);
+                                    continue;
+                                }
+                            }
+
+                            // Handle row + number format (legacy)
+                            if (root.TryGetProperty("row", out var rowProp) && 
+                                root.TryGetProperty("number", out var numberProp))
+                            {
+                                var row = rowProp.GetString();
+                                var number = numberProp.GetInt32();
+                                if (!string.IsNullOrEmpty(row))
+                                {
+                                    seatNumbers.Add($"{row}{number}");
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to parse SeatDetails for OrganizerTicketPayment {Id}: {SeatDetails}", 
+                            payment.Id, payment.SeatDetails);
+                    }
+                }
+
+                _logger.LogInformation("Extracted {Count} seat numbers from {PaymentCount} organizer payments", 
+                    seatNumbers.Count, organizerPayments.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error extracting seat numbers from OrganizerTicketPayments for event {EventId}", eventId);
+            }
+
+            return seatNumbers;
         }
 
         private static string GetEventStatusString(EventStatus? status, bool isActive)

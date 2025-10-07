@@ -72,4 +72,22 @@ namespace EventBooking.API.DTOs
         public decimal PaidRevenue { get; set; }
         public decimal TotalRevenue { get; set; }
     }
+
+    /// <summary>
+    /// DTO for reserved seats (Status = Booked but ReservedBy and ReservedUntil are NULL)
+    /// These are "stuck" seats that are marked as booked but have no reservation information
+    /// </summary>
+    public class ReservedSeatViewDTO
+    {
+        public int SeatId { get; set; }
+        public string SeatNumber { get; set; } = string.Empty;
+        public string Row { get; set; } = string.Empty;
+        public int Number { get; set; }
+        public string TicketTypeName { get; set; } = string.Empty;
+        public decimal SeatPrice { get; set; }
+        public DateTime? ReservedUntil { get; set; }
+        public string? ReservedBy { get; set; }
+        public DateTime MarkedAsBookedTime { get; set; }
+        public int DaysSinceBooked { get; set; }
+    }
 }

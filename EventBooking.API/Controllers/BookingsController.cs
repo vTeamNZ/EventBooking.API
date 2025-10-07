@@ -592,7 +592,17 @@ namespace EventBooking.API.Controllers
                         // Get allocated seats or tickets
                         var allocatedItems = new List<string>();
                         
-                        if (seatDetailsObj.TryGetProperty("allocatedSeats", out var allocatedSeatsProp) && 
+                        // FIRST: Check for nested originalSeatDetails structure (CRITICAL FIX)
+                        if (seatDetailsObj.TryGetProperty("originalSeatDetails", out var originalSeatDetails))
+                        {
+                            if (originalSeatDetails.TryGetProperty("allocatedSeats", out var nestedAllocatedSeats) && 
+                                nestedAllocatedSeats.ValueKind == JsonValueKind.Array)
+                            {
+                                allocatedItems.AddRange(nestedAllocatedSeats.EnumerateArray().Select(s => s.GetString() ?? "General"));
+                            }
+                        }
+                        // SECOND: Check for root level allocatedSeats
+                        else if (seatDetailsObj.TryGetProperty("allocatedSeats", out var allocatedSeatsProp) && 
                             allocatedSeatsProp.ValueKind == JsonValueKind.Array)
                         {
                             allocatedItems.AddRange(allocatedSeatsProp.EnumerateArray().Select(s => s.GetString() ?? "General"));

@@ -25,43 +25,29 @@ namespace EventBooking.API.Services
 
         /// <summary>
         /// 🎯 NEW ARCHITECTURE - Get the number of tickets sold for a specific ticket type using BookingLineItems
-        /// INCLUDES organizer tickets (ItemId = 0) for the same event to ensure accurate availability
+        /// INCLUDES organizer tickets for THIS SPECIFIC TICKET TYPE to ensure accurate availability
+        /// v5 FIX: Use Tab 03 logic - query OrganizerTicketPayments.TicketTypeId directly
         /// </summary>
         public async Task<int> GetTicketsSoldAsync(int ticketTypeId)
         {
-            // Get regular ticket sales for this specific ticket type
+            // Get regular ticket sales for this specific ticket type (sum Quantity from consolidated line items)
             var regularTicketsSold = await _context.BookingLineItems
                 .Where(bli => bli.ItemId == ticketTypeId && 
                             bli.ItemType == "Ticket" && 
                             bli.Status == "Active")
                 .SumAsync(bli => bli.Quantity);
 
-            // Get the event ID for this ticket type to find organizer tickets for the same event
-            var eventId = await _context.TicketTypes
-                .Where(tt => tt.Id == ticketTypeId)
-                .Select(tt => tt.EventId)
-                .FirstOrDefaultAsync();
+            // Get organizer tickets for THIS SPECIFIC TICKET TYPE from OrganizerTicketPayments table
+            // Use Tab 03 logic: Query TicketTypeId directly (not via BookingLineItems)
+            // This works correctly even when BookingLineItems.ItemId = 0 (data quality issue)
+            var organizerTicketsSold = await _context.OrganizerTicketPayments
+                .Where(otp => otp.TicketTypeId == ticketTypeId)
+                .CountAsync();
 
-            if (eventId == 0)
-            {
-                _logger.LogWarning("🎯 ORGANIZER FIX - GetTicketsSoldAsync: TicketTypeId={TicketTypeId} has no valid EventId", 
-                    ticketTypeId);
-                return regularTicketsSold;
-            }
-
-            // Get organizer tickets (ItemId = 0) for the same event
-            var organizerTicketsForEvent = await _context.BookingLineItems
-                .Join(_context.Bookings, bli => bli.BookingId, b => b.Id, (bli, b) => new { bli, b })
-                .Where(x => x.bli.ItemId == 0 && 
-                           x.bli.ItemType == "Ticket" && 
-                           x.bli.Status == "Active" &&
-                           x.b.EventId == eventId)
-                .SumAsync(x => x.bli.Quantity);
-
-            var totalSold = regularTicketsSold + organizerTicketsForEvent;
+            var totalSold = regularTicketsSold + organizerTicketsSold;
             
-            _logger.LogInformation("🎯 ORGANIZER FIX - GetTicketsSoldAsync: TicketTypeId={TicketTypeId}, EventId={EventId}, RegularSold={RegularSold}, OrganizerSold={OrganizerSold}, TotalSold={TotalSold}", 
-                ticketTypeId, eventId, regularTicketsSold, organizerTicketsForEvent, totalSold);
+            _logger.LogInformation("🎯 ORGANIZER FIX v5 (Direct TicketTypeId - Tab 03 logic) - GetTicketsSoldAsync: TicketTypeId={TicketTypeId}, RegularSold={RegularSold}, OrganizerSold={OrganizerSold}, TotalSold={TotalSold}", 
+                ticketTypeId, regularTicketsSold, organizerTicketsSold, totalSold);
             
             return totalSold;
         }

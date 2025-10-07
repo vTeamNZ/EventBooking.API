@@ -107,8 +107,11 @@ GROUP BY e.Id, e.Title
             if ($dataLine) {
                 # Extract the first booking date (this is a simplified parser)
                 if ($dataLine -match '(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)') {
-                    $startDate = [DateTime]::Parse($matches[1])
-                    Write-Host "   Found event booking period starting: $startDate" -ForegroundColor Green
+                    $firstBooking = [DateTime]::Parse($matches[1])
+                    # Use midnight (12 AM) of the booking day to avoid truncation issues
+                    $startDate = $firstBooking.Date
+                    Write-Host "   Found event booking period starting: $($firstBooking.ToString('yyyy-MM-dd HH:mm:ss.fff'))" -ForegroundColor Green
+                    Write-Host "   Using start date: $($startDate.ToString('yyyy-MM-dd')) 00:00:00 (midnight)" -ForegroundColor Cyan
                 }
             }
         }
@@ -139,10 +142,18 @@ try {
     # Build the base URL with date filter if available
     $baseUrl = "https://api.stripe.com/v1/checkout/sessions?limit=100"
     if ($startDate) {
-        # Convert to Unix timestamp for Stripe API
+        # Convert to Unix timestamp for Stripe API (using midnight to avoid millisecond truncation issues)
         $unixTimestamp = [int][double]::Parse((Get-Date $startDate -UFormat %s))
         $baseUrl += "&created[gte]=$unixTimestamp"
-        Write-Host "   Using date filter: sessions from $($startDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
+        
+        # DIAGNOSTIC: Show datetime conversion details
+        Write-Host "   --- DATETIME DIAGNOSTIC ---" -ForegroundColor Yellow
+        Write-Host "   Start Date (Midnight): $($startDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
+        Write-Host "   DateTime Kind: $($startDate.Kind)" -ForegroundColor Cyan
+        Write-Host "   Unix Timestamp: $unixTimestamp" -ForegroundColor Cyan
+        Write-Host "   Stripe Filter: created >= $unixTimestamp" -ForegroundColor Cyan
+        Write-Host "   Note: Using midnight avoids millisecond truncation issues" -ForegroundColor Green
+        Write-Host "   ---------------------------" -ForegroundColor Yellow
     } else {
         Write-Host "   Using session limit: maximum $MaxSessions sessions" -ForegroundColor Cyan
     }
@@ -171,6 +182,24 @@ try {
     }
     
     Write-Host "   Total sessions fetched: $($allSessions.Count)" -ForegroundColor Green
+    
+    # DIAGNOSTIC: Show first 3 sessions from Stripe to verify date filtering
+    if ($allSessions.Count -gt 0) {
+        Write-Host ""
+        Write-Host "   --- FIRST 3 STRIPE SESSIONS (DIAGNOSTIC) ---" -ForegroundColor Yellow
+        $firstThree = $allSessions | Sort-Object created | Select-Object -First 3
+        foreach ($s in $firstThree) {
+            $sessionDate = ([DateTime]'1970-01-01Z').AddSeconds($s.created)
+            Write-Host "   Session: $($s.id)" -ForegroundColor Cyan
+            Write-Host "     Created (Unix): $($s.created)" -ForegroundColor Cyan
+            Write-Host "     Created (DateTime): $($sessionDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
+            Write-Host "     Event: $($s.metadata.eventTitle)" -ForegroundColor Cyan
+            Write-Host "     Status: $($s.payment_status)" -ForegroundColor Cyan
+            Write-Host ""
+        }
+        Write-Host "   -------------------------------------------" -ForegroundColor Yellow
+        Write-Host ""
+    }
 } catch {
     Write-Error "Failed to fetch Stripe sessions: $($_.Exception.Message)"
     exit 1
@@ -197,6 +226,36 @@ $eventSessions = if ($ExactMatch) {
 }
 
 Write-Host "   Event sessions found: $($eventSessions.Count)" -ForegroundColor Green
+
+# DIAGNOSTIC: Show first 3 filtered event sessions
+if ($eventSessions.Count -gt 0) {
+    Write-Host ""
+    Write-Host "   --- FIRST 3 FILTERED EVENT SESSIONS (DIAGNOSTIC) ---" -ForegroundColor Yellow
+    $firstThreeEvents = $eventSessions | Sort-Object created | Select-Object -First 3
+    foreach ($s in $firstThreeEvents) {
+        $sessionDate = ([DateTime]'1970-01-01Z').AddSeconds($s.created)
+        Write-Host "   Session: $($s.id)" -ForegroundColor Cyan
+        Write-Host "     Created (Unix): $($s.created)" -ForegroundColor Cyan
+        Write-Host "     Created (DateTime): $($sessionDate.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
+        Write-Host "     Customer: $($s.metadata.customerFirstName) $($s.metadata.customerLastName)" -ForegroundColor Cyan
+        Write-Host "     Amount: $($s.amount_total / 100) NZD" -ForegroundColor Cyan
+        
+        if ($s.metadata.ticketDetails) {
+            try {
+                $tickets = $s.metadata.ticketDetails | ConvertFrom-Json
+                Write-Host "     Tickets:" -ForegroundColor Cyan
+                foreach ($t in $tickets) {
+                    Write-Host "       - $($t.Type): $($t.Quantity) @ $($t.UnitPrice) NZD" -ForegroundColor White
+                }
+            } catch {
+                Write-Host "     Tickets: (parse error)" -ForegroundColor Red
+            }
+        }
+        Write-Host ""
+    }
+    Write-Host "   ---------------------------------------------------" -ForegroundColor Yellow
+    Write-Host ""
+}
 
 if ($eventSessions.Count -eq 0) {
     Write-Warning "No paid sessions found for event '$EventName'"
