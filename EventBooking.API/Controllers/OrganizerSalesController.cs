@@ -1,6 +1,7 @@
 using EventBooking.API.Data;
 using EventBooking.API.DTOs;
 using EventBooking.API.Models;
+using EventBooking.API.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -17,15 +18,18 @@ namespace EventBooking.API.Controllers
         private readonly AppDbContext _context;
         private readonly ILogger<OrganizerSalesController> _logger;
         private readonly UserManager<ApplicationUser> _userManager;
+        private readonly IOrganizerStripeService _organizerStripeService;
 
         public OrganizerSalesController(
             AppDbContext context,
             ILogger<OrganizerSalesController> logger,
-            UserManager<ApplicationUser> userManager)
+            UserManager<ApplicationUser> userManager,
+            IOrganizerStripeService organizerStripeService)
         {
             _context = context;
             _logger = logger;
             _userManager = userManager;
+            _organizerStripeService = organizerStripeService;
         }
 
         // GET: organizer/test - Simple test endpoint without authorization
@@ -266,11 +270,10 @@ namespace EventBooking.API.Controllers
                     
                     if (statusLower == "succeeded" || statusLower == "paid" || statusLower == "paid only" || statusLower == "completed")
                     {
-                        // PAID ONLY: Fetch from Stripe API (source of truth)
-                        _logger.LogInformation("Fetching PAID bookings from Stripe API for event {EventId}", eventId);
-                        var stripeResult = await GetStripeBasedBookings(eventItem, page, pageSize, search);
-                        bookings = stripeResult.Bookings;
-                        totalCount = stripeResult.TotalCount;
+                        // PAID ONLY: Fetch from optimized Stripe service (single API call) with correct total count
+                        var (stripeBookings, stripeTotalCount) = await _organizerStripeService.GetStripeBookingsWithCountAsync(eventId, page, pageSize, search);
+                        bookings = stripeBookings;
+                        totalCount = stripeTotalCount;
                     }
                     else if (statusLower == "organizerdirect" || statusLower == "organizer direct" || statusLower == "organizer guests" || statusLower == "organizer")
                     {
@@ -290,12 +293,11 @@ namespace EventBooking.API.Controllers
                 }
                 else
                 {
-                    // ALL: Combine both sources
-                    _logger.LogInformation("Fetching ALL bookings (Stripe + Organizer) for event {EventId}", eventId);
-                    var stripeResult = await GetStripeBasedBookings(eventItem, 1, int.MaxValue, search);
+                    // ALL: Combine both sources using optimized Stripe service
+                    var stripeBookings = await _organizerStripeService.GetStripeBookingsAsync(eventId, 1, int.MaxValue, search);
                     var organizerResult = await GetOrganizerBasedBookings(eventId, 1, int.MaxValue, search);
                     
-                    var allBookings = stripeResult.Bookings.Concat(organizerResult.Bookings)
+                    var allBookings = stripeBookings.Concat(organizerResult.Bookings)
                         .OrderByDescending(b => b.BookedTime)
                         .ToList();
                     
@@ -320,114 +322,11 @@ namespace EventBooking.API.Controllers
         }
 
         /// <summary>
-        /// Fetches paid bookings directly from Stripe API (source of truth)
+        /// 🚀 REMOVED v2 - GetStripeBasedBookings() - REPLACED WITH OPTIMIZED SERVICE
+        /// OLD PROBLEM: Multiple Stripe API calls with pagination (very slow)
+        /// NEW SOLUTION: Single optimized API call via IOrganizerStripeService
+        /// Performance improvement: 1 API call instead of N paginated calls
         /// </summary>
-        private async Task<(List<BookingDetailViewDTO> Bookings, int TotalCount)> GetStripeBasedBookings(
-            Event eventItem, 
-            int page, 
-            int pageSize, 
-            string? search)
-        {
-            try
-            {
-                // Get Stripe configuration
-                var stripeSecretKey = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY");
-                if (string.IsNullOrEmpty(stripeSecretKey))
-                {
-                    var configuration = HttpContext.RequestServices.GetRequiredService<IConfiguration>();
-                    stripeSecretKey = configuration["Stripe:SecretKey"];
-                }
-
-                if (string.IsNullOrEmpty(stripeSecretKey))
-                {
-                    _logger.LogWarning("Stripe API key not found");
-                    return (new List<BookingDetailViewDTO>(), 0);
-                }
-
-                // Initialize Stripe
-                Stripe.StripeConfiguration.ApiKey = stripeSecretKey;
-                var sessionService = new Stripe.Checkout.SessionService();
-
-                // Fetch all checkout sessions
-                var allSessions = new List<Stripe.Checkout.Session>();
-                var hasMore = true;
-                string? startingAfter = null;
-
-                while (hasMore)
-                {
-                    var options = new Stripe.Checkout.SessionListOptions
-                    {
-                        Limit = 100,
-                        StartingAfter = startingAfter
-                    };
-
-                    var sessionList = await sessionService.ListAsync(options);
-                    allSessions.AddRange(sessionList.Data);
-
-                    hasMore = sessionList.HasMore;
-                    if (hasMore && sessionList.Data.Any())
-                    {
-                        startingAfter = sessionList.Data.Last().Id;
-                    }
-                    else
-                    {
-                        hasMore = false;
-                    }
-                }
-
-                // Filter sessions by event and paid status
-                var eventTitle = eventItem.Title;
-                var relevantSessions = allSessions
-                    .Where(s => s.Metadata != null && 
-                               s.Metadata.ContainsKey("eventTitle") && 
-                               s.Metadata["eventTitle"].Equals(eventTitle, StringComparison.OrdinalIgnoreCase) &&
-                               s.PaymentStatus == "paid")
-                    .ToList();
-
-                _logger.LogInformation("Found {Count} paid Stripe sessions for event {EventTitle}", relevantSessions.Count, eventTitle);
-
-                // Transform Stripe sessions to BookingDetailViewDTO
-                var bookings = new List<BookingDetailViewDTO>();
-                
-                foreach (var session in relevantSessions)
-                {
-                    var booking = MapStripeSessionToBookingDetail(session);
-                    
-                    // Apply search filter if provided
-                    if (!string.IsNullOrEmpty(search))
-                    {
-                        var searchLower = search.ToLower();
-                        if (!booking.FirstName.ToLower().Contains(searchLower) &&
-                            !booking.LastName.ToLower().Contains(searchLower) &&
-                            !booking.Email.ToLower().Contains(searchLower) &&
-                            !booking.PaymentId.ToLower().Contains(searchLower))
-                        {
-                            continue; // Skip this booking
-                        }
-                    }
-                    
-                    bookings.Add(booking);
-                }
-
-                // Sort by booked time (newest first)
-                bookings = bookings.OrderByDescending(b => b.BookedTime).ToList();
-
-                var totalCount = bookings.Count;
-
-                // Apply pagination
-                var paginatedBookings = bookings
-                    .Skip((page - 1) * pageSize)
-                    .Take(pageSize)
-                    .ToList();
-
-                return (paginatedBookings, totalCount);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error fetching Stripe-based bookings for event {EventId}", eventItem.Id);
-                return (new List<BookingDetailViewDTO>(), 0);
-            }
-        }
 
         /// <summary>
         /// Maps a Stripe Checkout Session to BookingDetailViewDTO
@@ -988,11 +887,8 @@ namespace EventBooking.API.Controllers
                     return NotFound(new { message = "Event not found." });
                 }
 
-                _logger.LogInformation("Calculating reserved seats for event {EventId}", eventId);
-
-                // Step 1: Get all seat numbers from Stripe bookings (Paid Only)
-                var stripeSeatNumbers = await GetStripeSeatNumbers(eventItem);
-                _logger.LogInformation("Found {Count} seats in Stripe bookings", stripeSeatNumbers.Count);
+                // Step 1: Get all seat numbers from Stripe bookings (optimized single API call)
+                var stripeSeatNumbers = await _organizerStripeService.GetStripeSeatNumbersAsync(eventId);
 
                 // Step 2: Get all seat numbers from Organizer Guests
                 var organizerSeatNumbers = await GetOrganizerSeatNumbers(eventId);
@@ -1063,93 +959,11 @@ namespace EventBooking.API.Controllers
         }
 
         /// <summary>
-        /// Gets all seat numbers from Stripe (Paid Only) bookings
+        /// 🚀 REMOVED v2 - GetStripeSeatNumbers() - REPLACED WITH OPTIMIZED SERVICE
+        /// OLD PROBLEM: Multiple Stripe API calls with pagination (very slow)
+        /// NEW SOLUTION: Single optimized API call via IOrganizerStripeService.GetStripeSeatNumbersAsync()
+        /// Performance improvement: 1 API call instead of N paginated calls
         /// </summary>
-        private async Task<List<string>> GetStripeSeatNumbers(Event eventItem)
-        {
-            var seatNumbers = new List<string>();
-
-            try
-            {
-                // Get Stripe configuration
-                var stripeSecretKey = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY");
-                if (string.IsNullOrEmpty(stripeSecretKey))
-                {
-                    var configuration = HttpContext.RequestServices.GetRequiredService<IConfiguration>();
-                    stripeSecretKey = configuration["Stripe:SecretKey"];
-                }
-
-                if (string.IsNullOrEmpty(stripeSecretKey))
-                {
-                    _logger.LogWarning("Stripe API key not found for seat extraction");
-                    return seatNumbers;
-                }
-
-                // Initialize Stripe
-                Stripe.StripeConfiguration.ApiKey = stripeSecretKey;
-                var sessionService = new Stripe.Checkout.SessionService();
-
-                // Fetch all checkout sessions
-                var allSessions = new List<Stripe.Checkout.Session>();
-                var hasMore = true;
-                string? startingAfter = null;
-
-                while (hasMore)
-                {
-                    var options = new Stripe.Checkout.SessionListOptions
-                    {
-                        Limit = 100,
-                        StartingAfter = startingAfter
-                    };
-
-                    var sessionList = await sessionService.ListAsync(options);
-                    allSessions.AddRange(sessionList.Data);
-
-                    hasMore = sessionList.HasMore;
-                    if (hasMore && sessionList.Data.Any())
-                    {
-                        startingAfter = sessionList.Data.Last().Id;
-                    }
-                    else
-                    {
-                        hasMore = false;
-                    }
-                }
-
-                // Filter sessions by event and paid status
-                var eventTitle = eventItem.Title;
-                var relevantSessions = allSessions
-                    .Where(s => s.Metadata != null && 
-                               s.Metadata.ContainsKey("eventTitle") && 
-                               s.Metadata["eventTitle"].Equals(eventTitle, StringComparison.OrdinalIgnoreCase) &&
-                               s.PaymentStatus == "paid")
-                    .ToList();
-
-                // Extract seat numbers from each session
-                foreach (var session in relevantSessions)
-                {
-                    if (session.Metadata != null && session.Metadata.ContainsKey("selectedSeats"))
-                    {
-                        var selectedSeats = session.Metadata["selectedSeats"];
-                        if (!string.IsNullOrEmpty(selectedSeats))
-                        {
-                            // Seats are semicolon-separated: "A1;A2;A3"
-                            var seats = selectedSeats.Split(';', StringSplitOptions.RemoveEmptyEntries);
-                            seatNumbers.AddRange(seats.Select(s => s.Trim()));
-                        }
-                    }
-                }
-
-                _logger.LogInformation("Extracted {Count} seat numbers from {SessionCount} Stripe sessions", 
-                    seatNumbers.Count, relevantSessions.Count);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error extracting seat numbers from Stripe for event {EventId}", eventItem.Id);
-            }
-
-            return seatNumbers;
-        }
 
         /// <summary>
         /// Gets all seat numbers from Organizer Guests bookings

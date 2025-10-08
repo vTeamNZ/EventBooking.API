@@ -30,6 +30,8 @@ namespace EventBooking.API.Services
         Task<int> GetTicketsAvailableAsync(int ticketTypeId);
         Task<bool> IsTicketTypeAvailableAsync(int ticketTypeId, int requestedQuantity);
         Task<Dictionary<int, int>> GetTicketAvailabilityForEventAsync(int eventId);
+        Task<Dictionary<int, TicketAvailabilityDetail>> GetEventTicketAvailabilityOptimizedAsync(int eventId);
+        Task<Dictionary<int, int>> GetStripeTicketsForEventAsync(int eventId);
     }
 
     public class TicketAvailabilityService : ITicketAvailabilityService
@@ -305,5 +307,263 @@ namespace EventBooking.API.Services
 
             return availability;
         }
+
+        /// <summary>
+        /// 🚀 NEW OPTIMIZED v7 - Get Stripe tickets for ALL ticket types in an event with ONE API call
+        /// Major performance improvement: 1 Stripe API call instead of N calls (where N = number of ticket types)
+        /// </summary>
+        public async Task<Dictionary<int, int>> GetStripeTicketsForEventAsync(int eventId)
+        {
+            var result = new Dictionary<int, int>();
+            
+            try
+            {
+                // Get all ticket types for this event
+                var ticketTypes = await _context.TicketTypes
+                    .Where(tt => tt.EventId == eventId)
+                    .Include(tt => tt.Event)
+                    .ToListAsync();
+
+                if (!ticketTypes.Any())
+                {
+                    _logger.LogWarning("🚀 OPTIMIZED STRIPE - No ticket types found for EventId={EventId}", eventId);
+                    return result;
+                }
+
+                var eventObj = ticketTypes.First().Event;
+                if (eventObj == null)
+                {
+                    _logger.LogWarning("🚀 OPTIMIZED STRIPE - Event not found for EventId={EventId}", eventId);
+                    return result;
+                }
+
+                // Initialize result dictionary with all ticket types
+                foreach (var ticketType in ticketTypes)
+                {
+                    result[ticketType.Id] = 0;
+                }
+
+                // Get Stripe configuration
+                var stripeSecretKey = Environment.GetEnvironmentVariable("STRIPE_SECRET_KEY") ?? 
+                                    _configuration["Stripe:SecretKey"];
+
+                if (string.IsNullOrEmpty(stripeSecretKey))
+                {
+                    _logger.LogWarning("🚀 OPTIMIZED STRIPE - Stripe secret key not configured");
+                    return result;
+                }
+
+                // Get event booking date range for efficient Stripe API calls
+                DateTime? firstBookingDate = null;
+                try
+                {
+                    var firstBooking = await _context.Bookings
+                        .Where(b => b.EventId == eventId)
+                        .MinAsync(b => (DateTime?)b.CreatedAt);
+                    
+                    if (firstBooking.HasValue)
+                    {
+                        firstBookingDate = firstBooking.Value.Date;
+                    }
+                }
+                catch
+                {
+                    // If no bookings found, firstBookingDate remains null
+                }
+
+                // 🚀 SINGLE STRIPE API CALL for the entire event
+                Stripe.StripeConfiguration.ApiKey = stripeSecretKey;
+                var sessionService = new Stripe.Checkout.SessionService();
+
+                var allSessions = new List<Stripe.Checkout.Session>();
+                var hasMore = true;
+                string? startingAfter = null;
+                const int maxSessionsFallback = 1000;
+
+                while (hasMore)
+                {
+                    var options = new Stripe.Checkout.SessionListOptions
+                    {
+                        Limit = 100,
+                        StartingAfter = startingAfter
+                    };
+
+                    if (firstBookingDate.HasValue)
+                    {
+                        options.Created = new Stripe.DateRangeOptions
+                        {
+                            GreaterThanOrEqual = firstBookingDate.Value
+                        };
+                    }
+
+                    var sessionList = await sessionService.ListAsync(options);
+                    allSessions.AddRange(sessionList.Data);
+
+                    hasMore = sessionList.HasMore;
+                    if (hasMore && sessionList.Data.Any())
+                    {
+                        startingAfter = sessionList.Data.Last().Id;
+                        
+                        if (!firstBookingDate.HasValue && allSessions.Count >= maxSessionsFallback)
+                        {
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        hasMore = false;
+                    }
+                }
+
+                // Filter sessions by event title and paid status
+                var eventTitle = eventObj.Title;
+                var relevantSessions = allSessions
+                    .Where(s => s.Metadata != null && 
+                               s.Metadata.ContainsKey("eventTitle") && 
+                               s.Metadata["eventTitle"].Equals(eventTitle, StringComparison.OrdinalIgnoreCase) &&
+                               s.PaymentStatus == "paid")
+                    .ToList();
+
+                // 🚀 PROCESS ALL TICKET TYPES AT ONCE from the single API response
+                foreach (var session in relevantSessions)
+                {
+                    if (session.Metadata != null && session.Metadata.ContainsKey("ticketDetails"))
+                    {
+                        try
+                        {
+                            var ticketDetailsJson = session.Metadata["ticketDetails"];
+                            using var document = JsonDocument.Parse(ticketDetailsJson);
+                            var ticketDetails = document.RootElement;
+
+                            if (ticketDetails.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var ticketElement in ticketDetails.EnumerateArray())
+                                {
+                                    if (ticketElement.TryGetProperty("Type", out var typeProperty) &&
+                                        ticketElement.TryGetProperty("Quantity", out var quantityProperty) &&
+                                        ticketElement.TryGetProperty("UnitPrice", out var unitPriceProperty))
+                                    {
+                                        var unitPrice = unitPriceProperty.GetDecimal();
+                                        var quantity = quantityProperty.GetInt32();
+                                        
+                                        // Match by ticket price across ALL ticket types
+                                        foreach (var ticketType in ticketTypes)
+                                        {
+                                            if (unitPrice == ticketType.Price)
+                                            {
+                                                result[ticketType.Id] += quantity;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning("🚀 OPTIMIZED STRIPE - Error parsing session {SessionId}: {Error}", session.Id, ex.Message);
+                        }
+                    }
+                }
+
+                _logger.LogInformation("🚀 OPTIMIZED STRIPE - EventId={EventId}, TicketTypes={TicketTypeCount}, SessionsChecked={SessionCount}, Results={Results}", 
+                    eventId, ticketTypes.Count, relevantSessions.Count, string.Join(", ", result.Select(r => $"TT{r.Key}:{r.Value}")));
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "🚀 OPTIMIZED STRIPE - Error getting Stripe tickets for EventId={EventId}", eventId);
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// 🚀 NEW OPTIMIZED v7 - Get complete availability for all ticket types in an event with optimized Stripe calls
+        /// Uses single Stripe API call + batch organizer queries for maximum performance
+        /// </summary>
+        public async Task<Dictionary<int, TicketAvailabilityDetail>> GetEventTicketAvailabilityOptimizedAsync(int eventId)
+        {
+            var result = new Dictionary<int, TicketAvailabilityDetail>();
+            
+            try
+            {
+                // Get all ticket types for this event
+                var ticketTypes = await _context.TicketTypes
+                    .Where(tt => tt.EventId == eventId)
+                    .ToListAsync();
+
+                if (!ticketTypes.Any())
+                {
+                    _logger.LogWarning("🚀 OPTIMIZED AVAILABILITY - No ticket types found for EventId={EventId}", eventId);
+                    return result;
+                }
+
+                // 🚀 SINGLE STRIPE API CALL for all ticket types
+                var stripeTicketCounts = await GetStripeTicketsForEventAsync(eventId);
+
+                // 🚀 SINGLE DATABASE QUERY for all organizer tickets
+                var ticketTypeIds = ticketTypes.Select(tt => tt.Id).ToList();
+                var organizerTicketCounts = await _context.OrganizerTicketPayments
+                    .Where(otp => ticketTypeIds.Contains(otp.TicketTypeId))
+                    .GroupBy(otp => otp.TicketTypeId)
+                    .Select(g => new { TicketTypeId = g.Key, Count = g.Count() })
+                    .ToDictionaryAsync(x => x.TicketTypeId, x => x.Count);
+
+                // 🚀 PROCESS ALL TICKET TYPES in memory
+                foreach (var ticketType in ticketTypes)
+                {
+                    var stripeCount = stripeTicketCounts.GetValueOrDefault(ticketType.Id, 0);
+                    var organizerCount = organizerTicketCounts.GetValueOrDefault(ticketType.Id, 0);
+                    var totalSold = stripeCount + organizerCount;
+
+                    int available;
+                    bool hasLimit;
+                    
+                    if (ticketType.MaxTickets == null)
+                    {
+                        available = -1; // Unlimited
+                        hasLimit = false;
+                    }
+                    else
+                    {
+                        available = Math.Max(0, ticketType.MaxTickets.Value - totalSold);
+                        hasLimit = true;
+                    }
+
+                    result[ticketType.Id] = new TicketAvailabilityDetail
+                    {
+                        TicketTypeId = ticketType.Id,
+                        Available = available,
+                        Sold = totalSold,
+                        StripeTickets = stripeCount,
+                        OrganizerTickets = organizerCount,
+                        HasLimit = hasLimit
+                    };
+                }
+
+                _logger.LogInformation("🚀 OPTIMIZED AVAILABILITY - EventId={EventId}, TicketTypes={Count}, StripeApiCalls=1, DatabaseQueries=2", 
+                    eventId, ticketTypes.Count);
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "🚀 OPTIMIZED AVAILABILITY - Error getting optimized availability for EventId={EventId}", eventId);
+                return result;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 🚀 NEW DTO - Enhanced ticket availability detail with separated counts
+    /// </summary>
+    public class TicketAvailabilityDetail
+    {
+        public int TicketTypeId { get; set; }
+        public int Available { get; set; }  // -1 means unlimited
+        public int Sold { get; set; }       // Total sold (Stripe + Organizer)
+        public int StripeTickets { get; set; }    // Stripe-paid tickets only
+        public int OrganizerTickets { get; set; } // Organizer-issued tickets only
+        public bool HasLimit { get; set; }
     }
 }

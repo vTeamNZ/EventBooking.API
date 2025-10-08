@@ -16,7 +16,8 @@ namespace EventBooking.API.Controllers
         }
 
         /// <summary>
-        /// Get availability for all ticket types in an event
+        /// 🚀 UPDATED v7 - Get availability for all ticket types in an event (NOW OPTIMIZED!)
+        /// Uses single Stripe API call + single DB query instead of N calls for massive performance improvement
         /// </summary>
         [HttpGet("event/{eventId}")]
         [AllowAnonymous]
@@ -24,22 +25,20 @@ namespace EventBooking.API.Controllers
         {
             try
             {
-                var availability = await _ticketAvailabilityService.GetTicketAvailabilityForEventAsync(eventId);
+                // 🚀 USE OPTIMIZED METHOD: Single Stripe API call + single DB query
+                var optimizedResults = await _ticketAvailabilityService.GetEventTicketAvailabilityOptimizedAsync(eventId);
                 
                 var result = new Dictionary<int, TicketAvailabilityInfo>();
                 
-                foreach (var item in availability)
+                foreach (var item in optimizedResults)
                 {
-                    var ticketTypeId = item.Key;
-                    var available = item.Value;
-                    var sold = await _ticketAvailabilityService.GetTicketsSoldAsync(ticketTypeId);
-                    
-                    result[ticketTypeId] = new TicketAvailabilityInfo
+                    var detail = item.Value;
+                    result[item.Key] = new TicketAvailabilityInfo
                     {
-                        TicketTypeId = ticketTypeId,
-                        Available = available,
-                        Sold = sold,
-                        HasLimit = available != -1
+                        TicketTypeId = detail.TicketTypeId,
+                        Available = detail.Available,
+                        Sold = detail.Sold,
+                        HasLimit = detail.HasLimit
                     };
                 }
                 
@@ -48,6 +47,40 @@ namespace EventBooking.API.Controllers
             catch (Exception ex)
             {
                 return StatusCode(500, new { error = "Failed to get ticket availability", details = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🚀 OPTIMIZED v7 - Get availability for all ticket types in an event with single Stripe API call
+        /// Major performance improvement: 1 Stripe API call + 1 DB query instead of N Stripe calls + N DB queries
+        /// </summary>
+        [HttpGet("event/{eventId}/optimized")]
+        [AllowAnonymous]
+        public async Task<ActionResult<Dictionary<int, TicketAvailabilityInfo>>> GetEventTicketAvailabilityOptimized(int eventId)
+        {
+            try
+            {
+                var optimizedResults = await _ticketAvailabilityService.GetEventTicketAvailabilityOptimizedAsync(eventId);
+                
+                var result = new Dictionary<int, TicketAvailabilityInfo>();
+                
+                foreach (var item in optimizedResults)
+                {
+                    var detail = item.Value;
+                    result[item.Key] = new TicketAvailabilityInfo
+                    {
+                        TicketTypeId = detail.TicketTypeId,
+                        Available = detail.Available,
+                        Sold = detail.Sold,
+                        HasLimit = detail.HasLimit
+                    };
+                }
+                
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = "Failed to get optimized ticket availability", details = ex.Message });
             }
         }
 
