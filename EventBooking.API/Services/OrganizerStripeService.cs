@@ -337,9 +337,14 @@ namespace EventBooking.API.Services
                 var localPart = email.Substring(0, atIndex);
                 var domainPart = email.Substring(atIndex);
 
-                // If local part is too short, just return the original
+                // Handle short local parts differently
                 if (localPart.Length <= 4)
-                    return email;
+                {
+                    // For very short emails, mask with first char + asterisks
+                    var firstChar = localPart.Substring(0, 1);
+                    var maskChars = new string('*', Math.Max(3, localPart.Length - 1));
+                    return $"{firstChar}{maskChars}{domainPart}";
+                }
 
                 // Take first 2 and last 2 characters of local part
                 var firstTwo = localPart.Substring(0, 2);

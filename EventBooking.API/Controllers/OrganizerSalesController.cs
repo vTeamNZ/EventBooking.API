@@ -266,7 +266,9 @@ namespace EventBooking.API.Controllers
                 // Route to appropriate data source based on payment status
                 if (!string.IsNullOrEmpty(paymentStatus))
                 {
+                    _logger.LogInformation("Using FILTERED mode for paymentStatus: {PaymentStatus}", paymentStatus);
                     var statusLower = paymentStatus.ToLower().Trim();
+                    
                     
                     if (statusLower == "succeeded" || statusLower == "paid" || statusLower == "paid only" || statusLower == "completed")
                     {
@@ -293,13 +295,30 @@ namespace EventBooking.API.Controllers
                 }
                 else
                 {
-                    // ALL: Combine both sources using optimized Stripe service
+                    // ALL: Combine both sources using optimized Stripe service + reserved seats
+                    _logger.LogInformation("Using COMBINED mode - fetching Stripe, Organizer bookings, and reserved seats for event {EventId}", eventId);
                     var stripeBookings = await _organizerStripeService.GetStripeBookingsAsync(eventId, 1, int.MaxValue, search);
-                    var organizerResult = await GetOrganizerBasedBookings(eventId, 1, int.MaxValue, search);
+                    _logger.LogInformation("Retrieved {StripeCount} Stripe bookings", stripeBookings.Count);
                     
-                    var allBookings = stripeBookings.Concat(organizerResult.Bookings)
+                    var organizerResult = await GetOrganizerBasedBookings(eventId, 1, int.MaxValue, search);
+                    _logger.LogInformation("Retrieved {OrganizerCount} Organizer bookings", organizerResult.Bookings.Count);
+                    
+                    // Get reserved seats and map them to BookingDetailViewDTO format
+                    var reservedSeatsBookings = await GetReservedSeatsAsBookings(eventId, search);
+                    _logger.LogInformation("Retrieved {ReservedCount} reserved seats", reservedSeatsBookings.Count);
+                    
+                    var allBookings = stripeBookings
+                        .Concat(organizerResult.Bookings)
+                        .Concat(reservedSeatsBookings)
                         .OrderByDescending(b => b.BookedTime)
                         .ToList();
+                    
+                    _logger.LogInformation("Combined total: {TotalCount} bookings (including reserved seats)", allBookings.Count);
+                    
+                    // Add breakdown counts to response headers for frontend display
+                    Response.Headers.Add("X-Stripe-Count", stripeBookings.Count.ToString());
+                    Response.Headers.Add("X-Organizer-Count", organizerResult.Bookings.Count.ToString());
+                    Response.Headers.Add("X-Reserved-Count", reservedSeatsBookings.Count.ToString());
                     
                     totalCount = allBookings.Count;
                     bookings = allBookings
@@ -826,9 +845,14 @@ namespace EventBooking.API.Controllers
                 var localPart = email.Substring(0, atIndex);
                 var domainPart = email.Substring(atIndex);
 
-                // If local part is too short, just return the original
+                // Handle short local parts differently
                 if (localPart.Length <= 4)
-                    return email;
+                {
+                    // For very short emails, mask with first char + asterisks
+                    var firstChar = localPart.Substring(0, 1);
+                    var maskChars = new string('*', Math.Max(3, localPart.Length - 1));
+                    return $"{firstChar}{maskChars}{domainPart}";
+                }
 
                 // Take first 2 and last 2 characters of local part
                 var firstTwo = localPart.Substring(0, 2);
@@ -1082,6 +1106,83 @@ namespace EventBooking.API.Controllers
             }
             
             return isActive ? "Active" : "Inactive";
+        }
+
+        /// <summary>
+        /// Maps reserved seats to BookingDetailViewDTO format for inclusion in "All Bookings" view
+        /// Reserved seats have empty values for fields that don't apply (payment info, customer details)
+        /// </summary>
+        private async Task<List<BookingDetailViewDTO>> GetReservedSeatsAsBookings(int eventId, string? search = null)
+        {
+            try
+            {
+                // Step 1: Get all seat numbers from Stripe bookings (optimized single API call)
+                var stripeSeatNumbers = await _organizerStripeService.GetStripeSeatNumbersAsync(eventId);
+
+                // Step 2: Get all seat numbers from Organizer Guests
+                var organizerSeatNumbers = await GetOrganizerSeatNumbers(eventId);
+
+                // Step 3: Combine both lists (remove duplicates)
+                var bookedSeatNumbers = stripeSeatNumbers.Union(organizerSeatNumbers, StringComparer.OrdinalIgnoreCase)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                // Step 4: Get all seats with Status = Booked (2)
+                var reservedSeatsQuery = await _context.Seats
+                    .Include(s => s.TicketType)
+                    .Where(s => s.EventId == eventId && s.Status == SeatStatus.Booked)
+                    .ToListAsync();
+
+                // Step 5: Filter out seats that are in Paid or Organizer bookings
+                var actualReservedSeats = reservedSeatsQuery
+                    .Where(s => !bookedSeatNumbers.Contains(s.SeatNumber))
+                    .ToList();
+
+                // Step 6: Apply search filter if provided
+                if (!string.IsNullOrEmpty(search))
+                {
+                    var searchLower = search.ToLower();
+                    actualReservedSeats = actualReservedSeats
+                        .Where(s => s.SeatNumber.ToLower().Contains(searchLower) ||
+                                   (s.ReservedBy?.ToLower().Contains(searchLower) ?? false) ||
+                                   (s.TicketType?.Name?.ToLower().Contains(searchLower) ?? false))
+                        .ToList();
+                }
+
+                // Step 7: Map to BookingDetailViewDTO format
+                var reservedBookings = actualReservedSeats.Select(seat => new BookingDetailViewDTO
+                {
+                    BookingId = -seat.Id, // Use negative seat ID to distinguish from real bookings
+                    PaymentId = "RESERVED",
+                    FirstName = "Reserved",
+                    LastName = "Seat",
+                    Email = seat.ReservedBy ?? "system@reserved.seat",
+                    Mobile = "",
+                    BookedTime = seat.ReservedUntil ?? DateTime.UtcNow.AddDays(-1), // Use ReservedUntil or default to yesterday
+                    PaymentStatus = "Reserved",
+                    TotalAmount = 0m, // Reserved seats have no payment
+                    TotalTickets = 1,
+                    TicketDetails = new List<TicketTypeDetailDTO>
+                    {
+                        new TicketTypeDetailDTO
+                        {
+                            TicketTypeName = seat.TicketType?.Name ?? "Unknown",
+                            Quantity = 1,
+                            UnitPrice = 0m, // Reserved seats show $0
+                            SeatInfo = seat.SeatNumber
+                        }
+                    },
+                    IsPaid = false,
+                    IsOrganizerBooking = false // Reserved seats are neither Stripe nor Organizer bookings
+                }).ToList();
+
+                _logger.LogInformation("Mapped {Count} reserved seats to booking format", reservedBookings.Count);
+                return reservedBookings;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error mapping reserved seats to booking format for event {EventId}", eventId);
+                return new List<BookingDetailViewDTO>();
+            }
         }
     }
 }
