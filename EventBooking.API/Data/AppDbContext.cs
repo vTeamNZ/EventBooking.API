@@ -346,6 +346,58 @@ namespace EventBooking.API.Data
                 entity.HasIndex(otp => new { otp.EventId, otp.IsPaidToOrganizer })
                     .HasDatabaseName("IX_OrganizerTicketPayments_EventId_IsPaidToOrganizer");
             });
+
+            // Configure refund tracking relationships
+            modelBuilder.Entity<Booking>(entity =>
+            {
+                entity.HasOne(b => b.RefundedByUser)
+                    .WithMany()
+                    .HasForeignKey(b => b.RefundedBy)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                // Create index for refund queries
+                entity.HasIndex(b => new { b.Status, b.EventId })
+                    .HasDatabaseName("IX_Bookings_Status_EventId");
+
+                entity.HasIndex(b => b.RefundedAt)
+                    .HasDatabaseName("IX_Bookings_RefundedAt")
+                    .HasFilter("RefundedAt IS NOT NULL");
+            });
+
+            modelBuilder.Entity<BookingLineItem>(entity =>
+            {
+                entity.HasOne(bli => bli.RefundedByUser)
+                    .WithMany()
+                    .HasForeignKey(bli => bli.RefundedBy)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                // Create index for refund queries
+                entity.HasIndex(bli => new { bli.Status, bli.ItemType })
+                    .HasDatabaseName("IX_BookingLineItems_Status_ItemType");
+
+                entity.HasIndex(bli => bli.RefundedAt)
+                    .HasDatabaseName("IX_BookingLineItems_RefundedAt")
+                    .HasFilter("RefundedAt IS NOT NULL");
+            });
+
+            modelBuilder.Entity<OrganizerTicketPayment>(entity =>
+            {
+                entity.HasOne(otp => otp.RefundedByUser)
+                    .WithMany()
+                    .HasForeignKey(otp => otp.RefundedBy)
+                    .OnDelete(DeleteBehavior.SetNull);
+
+                // Create additional indexes for refund queries
+                entity.HasIndex(otp => new { otp.Status, otp.EventId })
+                    .HasDatabaseName("IX_OrganizerTicketPayments_Status_EventId");
+
+                entity.HasIndex(otp => new { otp.BookingLineItemId, otp.Status })
+                    .HasDatabaseName("IX_OrganizerTicketPayments_BookingLineItemId_Status");
+
+                entity.HasIndex(otp => otp.RefundedAt)
+                    .HasDatabaseName("IX_OrganizerTicketPayments_RefundedAt")
+                    .HasFilter("RefundedAt IS NOT NULL");
+            });
         }
 
     }

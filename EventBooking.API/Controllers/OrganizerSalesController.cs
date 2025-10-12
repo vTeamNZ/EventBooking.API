@@ -19,17 +19,52 @@ namespace EventBooking.API.Controllers
         private readonly ILogger<OrganizerSalesController> _logger;
         private readonly UserManager<ApplicationUser> _userManager;
         private readonly IOrganizerStripeService _organizerStripeService;
+        private readonly IOrganizerSalesManagementService _salesManagementService;
+        private readonly IEventStatusService _eventStatusService;
 
         public OrganizerSalesController(
             AppDbContext context,
             ILogger<OrganizerSalesController> logger,
             UserManager<ApplicationUser> userManager,
-            IOrganizerStripeService organizerStripeService)
+            IOrganizerStripeService organizerStripeService,
+            IOrganizerSalesManagementService salesManagementService,
+            IEventStatusService eventStatusService)
         {
             _context = context;
             _logger = logger;
             _userManager = userManager;
             _organizerStripeService = organizerStripeService;
+            _salesManagementService = salesManagementService;
+            _eventStatusService = eventStatusService;
+        }
+
+        /// <summary>
+        /// Helper method to convert UTC DateTime to New Zealand timezone
+        /// Automatically handles NZST/NZDT (daylight saving) transitions
+        /// </summary>
+        private DateTime ConvertToNzTime(DateTime utcDateTime)
+        {
+            // Convert the provided UTC datetime to NZ timezone using the same logic as EventStatusService
+            try
+            {
+                // Try Windows timezone ID first
+                var nzTimeZone = TimeZoneInfo.FindSystemTimeZoneById("New Zealand Standard Time");
+                return TimeZoneInfo.ConvertTimeFromUtc(utcDateTime, nzTimeZone);
+            }
+            catch
+            {
+                try
+                {
+                    // Fallback for Linux/Mac systems
+                    var nzTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Pacific/Auckland");
+                    return TimeZoneInfo.ConvertTimeFromUtc(utcDateTime, nzTimeZone);
+                }
+                catch
+                {
+                    // Ultimate fallback - return UTC if timezone conversion fails
+                    return utcDateTime;
+                }
+            }
         }
 
         // GET: organizer/test - Simple test endpoint without authorization
@@ -428,7 +463,7 @@ namespace EventBooking.API.Controllers
                 LastName = lastName ?? "",
                 Email = HashEmail(email), // Hash for privacy
                 Mobile = mobile ?? "",
-                BookedTime = session.Created,
+                BookedTime = ConvertToNzTime(session.Created),
                 PaymentStatus = "succeeded",
                 TotalAmount = (decimal)(session.AmountTotal ?? 0) / 100, // Convert from cents
                 TotalTickets = totalTickets,
@@ -465,7 +500,6 @@ namespace EventBooking.API.Controllers
 
                 // Group by customer and booking line item to consolidate multiple tickets per booking
                 var groupedPayments = await query
-                    .OrderByDescending(otp => otp.CreatedAt)
                     .GroupBy(otp => new { otp.BookingLineItemId, otp.CustomerEmail, otp.CustomerFirstName, otp.CustomerLastName })
                     .Select(g => new
                     {
@@ -486,6 +520,12 @@ namespace EventBooking.API.Controllers
                     })
                     .ToListAsync();
 
+                // Sort by CreatedAt descending (newest first) and then by BookingLineItemId descending for consistency
+                groupedPayments = groupedPayments
+                    .OrderByDescending(g => g.CreatedAt)
+                    .ThenByDescending(g => g.BookingLineItemId)
+                    .ToList();
+
                 var totalCount = groupedPayments.Count;
 
                 // Apply pagination
@@ -503,7 +543,7 @@ namespace EventBooking.API.Controllers
                     LastName = g.CustomerLastName ?? "",
                     Email = HashEmail(g.CustomerEmail),
                     Mobile = g.CustomerMobile ?? "",
-                    BookedTime = g.CreatedAt,
+                    BookedTime = ConvertToNzTime(g.CreatedAt),
                     PaymentStatus = "OrganizerDirect",
                     TotalAmount = g.TotalAmount,
                     TotalTickets = g.TotalTickets,
@@ -952,7 +992,8 @@ namespace EventBooking.API.Controllers
                         MarkedAsBookedTime = DateTime.UtcNow, // We don't track this, use current time
                         DaysSinceBooked = 0 // Unknown, default to 0
                     })
-                    .OrderBy(s => s.TicketTypeName)
+                    .OrderByDescending(s => s.ReservedUntil ?? DateTime.MinValue) // Most recently reserved first
+                    .ThenBy(s => s.TicketTypeName)
                     .ThenBy(s => s.Row)
                     .ThenBy(s => s.Number)
                     .ToList();
@@ -1173,7 +1214,7 @@ namespace EventBooking.API.Controllers
                     },
                     IsPaid = false,
                     IsOrganizerBooking = false // Reserved seats are neither Stripe nor Organizer bookings
-                }).ToList();
+                }).OrderByDescending(booking => booking.BookedTime).ToList();
 
                 _logger.LogInformation("Mapped {Count} reserved seats to booking format", reservedBookings.Count);
                 return reservedBookings;
@@ -1182,6 +1223,248 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error mapping reserved seats to booking format for event {EventId}", eventId);
                 return new List<BookingDetailViewDTO>();
+            }
+        }
+
+        // ================================================================
+        // SALES MANAGEMENT ENDPOINTS (Simplified Version)
+        // ================================================================
+
+        /// <summary>
+        /// Get tickets for sales management table
+        /// </summary>
+        /// <param name="eventId">The event ID to get tickets for</param>
+        /// <returns>List of tickets for sales management</returns>
+        [HttpGet("events/{eventId}/sales-management")]
+        [Authorize(Roles = "Organizer")]
+        public async Task<ActionResult<List<OrganizerTicketSalesDTO>>> GetTicketsForSalesManagement(int eventId)
+        {
+            try
+            {
+                _logger.LogInformation("Getting sales management tickets for event {EventId}", eventId);
+                
+                var tickets = await _salesManagementService.GetTicketsForSalesManagementAsync(eventId);
+                
+                return Ok(tickets);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access to event {EventId}", eventId);
+                return Forbid("Access denied");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting tickets for event {EventId}", eventId);
+                return StatusCode(500, new SimpleOperationResponse 
+                { 
+                    Success = false, 
+                    Message = "An error occurred while retrieving tickets" 
+                });
+            }
+        }
+        
+        /// <summary>
+        /// Update customer details for a ticket
+        /// </summary>
+        /// <param name="paymentId">The payment ID to update</param>
+        /// <param name="request">The customer details to update</param>
+        /// <returns>Success response</returns>
+        [HttpPut("payments/{paymentId}/customer-details")]
+        [Authorize(Roles = "Organizer")]
+        public async Task<ActionResult<SimpleOperationResponse>> UpdateCustomerDetails(
+            int paymentId, 
+            [FromBody] UpdateCustomerDetailsRequest request)
+        {
+            try
+            {
+                if (!ModelState.IsValid)
+                {
+                    var errors = ModelState.Values
+                        .SelectMany(v => v.Errors)
+                        .Select(e => e.ErrorMessage);
+                    
+                    return BadRequest(new SimpleOperationResponse
+                    {
+                        Success = false,
+                        Message = $"Validation failed: {string.Join(", ", errors)}"
+                    });
+                }
+                
+                _logger.LogInformation("Updating customer details for payment {PaymentId}", paymentId);
+                
+                var success = await _salesManagementService.UpdateCustomerDetailsAsync(paymentId, request);
+                
+                return Ok(new SimpleOperationResponse
+                {
+                    Success = success,
+                    Message = success ? "Customer details updated successfully" : "Failed to update customer details"
+                });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                _logger.LogWarning(ex, "Ticket payment {PaymentId} not found", paymentId);
+                return NotFound(new SimpleOperationResponse
+                {
+                    Success = false,
+                    Message = "Ticket not found"
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access to payment {PaymentId}", paymentId);
+                return Forbid("Access denied");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error updating customer details for payment {PaymentId}", paymentId);
+                return StatusCode(500, new SimpleOperationResponse
+                {
+                    Success = false,
+                    Message = "An error occurred while updating customer details"
+                });
+            }
+        }
+        
+        /// <summary>
+        /// Toggle payment status for a ticket
+        /// </summary>
+        /// <param name="paymentId">The payment ID to update</param>
+        /// <param name="request">The payment status toggle request</param>
+        /// <returns>Success response</returns>
+        [HttpPut("payments/{paymentId}/toggle-payment")]
+        [Authorize(Roles = "Organizer")]
+        public async Task<ActionResult<SimpleOperationResponse>> TogglePaymentStatus(
+            int paymentId, 
+            [FromBody] TogglePaymentRequest request)
+        {
+            try
+            {
+                _logger.LogInformation("Toggling payment status for payment {PaymentId} to {IsPaid}", paymentId, request.IsPaid);
+                
+                var success = await _salesManagementService.TogglePaymentStatusAsync(paymentId, request.IsPaid);
+                
+                return Ok(new SimpleOperationResponse
+                {
+                    Success = success,
+                    Message = success 
+                        ? $"Payment status updated to {(request.IsPaid ? "paid" : "unpaid")}" 
+                        : "Failed to update payment status"
+                });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                _logger.LogWarning(ex, "Ticket payment {PaymentId} not found", paymentId);
+                return NotFound(new SimpleOperationResponse
+                {
+                    Success = false,
+                    Message = "Ticket not found"
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access to payment {PaymentId}", paymentId);
+                return Forbid("Access denied");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error toggling payment status for payment {PaymentId}", paymentId);
+                return StatusCode(500, new SimpleOperationResponse
+                {
+                    Success = false,
+                    Message = "An error occurred while updating payment status"
+                });
+            }
+        }
+        
+        /// <summary>
+        /// Cancel a ticket
+        /// </summary>
+        /// <param name="paymentId">The payment ID to cancel</param>
+        /// <returns>Success response</returns>
+        [HttpPut("payments/{paymentId}/cancel")]
+        [Authorize(Roles = "Organizer")]
+        public async Task<ActionResult<SimpleOperationResponse>> CancelTicket(int paymentId)
+        {
+            try
+            {
+                _logger.LogInformation("Cancelling ticket for payment {PaymentId}", paymentId);
+                
+                var success = await _salesManagementService.CancelTicketAsync(paymentId);
+                
+                return Ok(new SimpleOperationResponse
+                {
+                    Success = success,
+                    Message = success ? "Ticket cancelled successfully" : "Failed to cancel ticket"
+                });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                _logger.LogWarning(ex, "Ticket payment {PaymentId} not found", paymentId);
+                return NotFound(new SimpleOperationResponse
+                {
+                    Success = false,
+                    Message = "Ticket not found"
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access to payment {PaymentId}", paymentId);
+                return Forbid("Access denied");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error cancelling ticket for payment {PaymentId}", paymentId);
+                return StatusCode(500, new SimpleOperationResponse
+                {
+                    Success = false,
+                    Message = "An error occurred while cancelling the ticket"
+                });
+            }
+        }
+        
+        /// <summary>
+        /// Restore a cancelled ticket
+        /// </summary>
+        /// <param name="paymentId">The payment ID to restore</param>
+        /// <returns>Success response</returns>
+        [HttpPut("payments/{paymentId}/restore")]
+        [Authorize(Roles = "Organizer")]
+        public async Task<ActionResult<SimpleOperationResponse>> RestoreTicket(int paymentId)
+        {
+            try
+            {
+                _logger.LogInformation("Restoring ticket for payment {PaymentId}", paymentId);
+                
+                var success = await _salesManagementService.RestoreTicketAsync(paymentId);
+                
+                return Ok(new SimpleOperationResponse
+                {
+                    Success = success,
+                    Message = success ? "Ticket restored successfully" : "Failed to restore ticket"
+                });
+            }
+            catch (KeyNotFoundException ex)
+            {
+                _logger.LogWarning(ex, "Ticket payment {PaymentId} not found", paymentId);
+                return NotFound(new SimpleOperationResponse
+                {
+                    Success = false,
+                    Message = "Ticket not found"
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                _logger.LogWarning(ex, "Unauthorized access to payment {PaymentId}", paymentId);
+                return Forbid("Access denied");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error restoring ticket for payment {PaymentId}", paymentId);
+                return StatusCode(500, new SimpleOperationResponse
+                {
+                    Success = false,
+                    Message = "An error occurred while restoring the ticket"
+                });
             }
         }
     }

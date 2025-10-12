@@ -218,16 +218,18 @@ namespace EventBooking.API.Services
         /// <summary>
         /// 🎯 NEW METHOD - Get organizer-issued tickets for a specific ticket type
         /// Uses OrganizerTicketPayments table (same logic as Dashboard Tab 03)
+        /// UPDATED: Excludes cancelled tickets from count
         /// </summary>
         public async Task<int> GetOrganizerTicketsSoldAsync(int ticketTypeId)
         {
             try
             {
                 var organizerTicketCount = await _context.OrganizerTicketPayments
-                    .Where(otp => otp.TicketTypeId == ticketTypeId)
+                    .Where(otp => otp.TicketTypeId == ticketTypeId && 
+                                  (otp.Status == null || otp.Status == "Active")) // Exclude cancelled tickets
                     .CountAsync();
 
-                _logger.LogInformation("🎯 ORGANIZER COUNT - TicketTypeId={TicketTypeId}, OrganizerTickets={Count}", 
+                _logger.LogInformation("🎯 ORGANIZER COUNT - TicketTypeId={TicketTypeId}, OrganizerTickets={Count} (excluding cancelled)", 
                     ticketTypeId, organizerTicketCount);
 
                 return organizerTicketCount;

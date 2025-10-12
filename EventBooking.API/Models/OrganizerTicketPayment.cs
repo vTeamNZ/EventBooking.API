@@ -108,6 +108,17 @@ namespace EventBooking.API.Models
         public string Status { get; set; } = "Active";
 
         /// <summary>
+        /// When this individual ticket was refunded/cancelled
+        /// </summary>
+        public DateTime? RefundedAt { get; set; }
+
+        /// <summary>
+        /// Organizer user ID who performed the refund/cancellation
+        /// </summary>
+        [StringLength(450)]
+        public string? RefundedBy { get; set; }
+
+        /// <summary>
         /// When this payment record was created
         /// </summary>
         [Required]
@@ -119,9 +130,15 @@ namespace EventBooking.API.Models
         [Required]
         public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// Check if this individual ticket is refunded
+        /// </summary>
+        public bool IsRefunded => Status == "Refunded" || Status == "Cancelled";
+
         // Navigation properties
         public virtual BookingLineItem? BookingLineItem { get; set; }
         public virtual Event? Event { get; set; }
         public virtual TicketType? TicketType { get; set; }
+        public virtual ApplicationUser? RefundedByUser { get; set; }
     }
 }

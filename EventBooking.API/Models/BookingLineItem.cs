@@ -44,10 +44,27 @@ namespace EventBooking.API.Models
         [StringLength(50)]
         public string Status { get; set; } = "Active";
 
+        /// <summary>
+        /// When this line item was refunded/cancelled (follows parent booking)
+        /// </summary>
+        public DateTime? RefundedAt { get; set; }
+
+        /// <summary>
+        /// Admin user ID who performed the refund/cancellation
+        /// </summary>
+        [StringLength(450)]
+        public string? RefundedBy { get; set; }
+
         [Required]
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+        /// <summary>
+        /// Check if this line item is refunded
+        /// </summary>
+        public bool IsRefunded => Status == "Refunded" || Status == "Cancelled";
+
         // Navigation properties
         public virtual Booking Booking { get; set; }
+        public virtual ApplicationUser? RefundedByUser { get; set; }
     }
 }

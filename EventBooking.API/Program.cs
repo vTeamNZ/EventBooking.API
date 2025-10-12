@@ -173,6 +173,9 @@ builder.Services.AddScoped<IAfterPayFeeService, AfterPayFeeService>();
 // Add Organizer Ticket Payment Service
 builder.Services.AddScoped<IOrganizerTicketPaymentService, OrganizerTicketPaymentService>();
 
+// Add Organizer Sales Management Service (Simplified Version)
+builder.Services.AddScoped<IOrganizerSalesManagementService, OrganizerSalesManagementService>();
+
 // Configure Stripe Services
 builder.Services.AddScoped<Stripe.PaymentIntentService>();
 

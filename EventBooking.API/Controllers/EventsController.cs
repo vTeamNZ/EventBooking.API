@@ -970,17 +970,24 @@ namespace EventBooking.API.Controllers
                     {
                         TicketTypeId = g.Key.TicketTypeId,
                         TicketPrice = g.Key.TicketPrice,
-                        IssuedTickets = g.Count(),
-                        PaidTickets = g.Count(otp => otp.IsPaidToOrganizer == true),
-                        UnpaidTickets = g.Count(otp => otp.IsPaidToOrganizer == false),
-                        PaidRevenue = g.Where(otp => otp.IsPaidToOrganizer == true).Sum(otp => otp.TicketPrice),
-                        UnpaidRevenue = g.Where(otp => otp.IsPaidToOrganizer == false).Sum(otp => otp.TicketPrice)
+                        // Ticket Count: Only count tickets that are NOT cancelled (regardless of payment status)
+                        IssuedTickets = g.Count(otp => otp.Status != "Cancelled" && otp.Status != "Refunded"),
+                        // Paid Tickets: Count tickets that are paid AND not cancelled
+                        PaidTickets = g.Count(otp => otp.IsPaidToOrganizer == true && otp.Status != "Cancelled" && otp.Status != "Refunded"),
+                        // Unpaid Tickets: Count tickets that are unpaid AND not cancelled
+                        UnpaidTickets = g.Count(otp => otp.IsPaidToOrganizer == false && otp.Status != "Cancelled" && otp.Status != "Refunded"),
+                        // Total Revenue: Only include tickets that are NOT cancelled
+                        TotalRevenue = g.Where(otp => otp.Status != "Cancelled" && otp.Status != "Refunded").Sum(otp => otp.TicketPrice),
+                        // Paid Revenue: Include only paid tickets that are NOT cancelled
+                        PaidRevenue = g.Where(otp => otp.IsPaidToOrganizer == true && otp.Status != "Cancelled" && otp.Status != "Refunded").Sum(otp => otp.TicketPrice),
+                        // Unpaid Revenue: Will be calculated as TotalRevenue - PaidRevenue (ensures mathematical consistency)
+                        UnpaidRevenue = 0 // Placeholder, will be calculated below
                     })
                     .ToListAsync();
 
-                // Calculate total transaction count (unique combinations of customer and booking)
+                // Calculate total transaction count (unique combinations of customer and booking, excluding cancelled)
                 var totalTransactions = await _context.OrganizerTicketPayments
-                    .Where(otp => otp.EventId == eventId)
+                    .Where(otp => otp.EventId == eventId && otp.Status != "Cancelled" && otp.Status != "Refunded")
                     .GroupBy(otp => new { otp.BookingLineItemId, otp.CustomerEmail, otp.CustomerFirstName, otp.CustomerLastName })
                     .CountAsync();
 
@@ -994,7 +1001,8 @@ namespace EventBooking.API.Controllers
                 var organizerTicketTypes = organizerPayments.Select(op =>
                 {
                     var ticketType = ticketTypes.FirstOrDefault(tt => tt.Id == op.TicketTypeId);
-                    var totalRevenue = op.PaidRevenue + op.UnpaidRevenue;
+                    // Calculate UnpaidRevenue as TotalRevenue - PaidRevenue for mathematical consistency
+                    var unpaidRevenue = op.TotalRevenue - op.PaidRevenue;
 
                     return new OrganizerTicketTypeRevenueDTO
                     {
@@ -1004,9 +1012,9 @@ namespace EventBooking.API.Controllers
                         IssuedTickets = op.IssuedTickets,
                         PaidTickets = op.PaidTickets,
                         UnpaidTickets = op.UnpaidTickets,
-                        TotalRevenue = totalRevenue,
+                        TotalRevenue = op.TotalRevenue,
                         PaidRevenue = op.PaidRevenue,
-                        UnpaidRevenue = op.UnpaidRevenue,
+                        UnpaidRevenue = unpaidRevenue,
                         PaymentPercentage = op.IssuedTickets > 0 
                             ? Math.Round((decimal)op.PaidTickets / op.IssuedTickets * 100, 1)
                             : 0
@@ -1161,11 +1169,11 @@ namespace EventBooking.API.Controllers
                         TicketTypeName = ott.TicketTypeName,
                         TicketPrice = ott.TicketPrice,
                         Quantity = ott.IssuedTickets,
-                        Revenue = ott.TotalRevenue,
-                        FormattedLine = $"{ott.TicketTypeName}: ${ott.TicketPrice:F2} × {ott.IssuedTickets} = ${ott.TotalRevenue:F2}"
+                        Revenue = ott.PaidRevenue, // Use PaidRevenue instead of TotalRevenue for revenue summary
+                        FormattedLine = $"{ott.TicketTypeName}: ${ott.TicketPrice:F2} × {ott.IssuedTickets} = ${ott.PaidRevenue:F2}"
                     }).Where(item => item.Quantity > 0).OrderByDescending(item => item.TicketPrice).ToList();
 
-                    organizerRevenue = organizerRevenueData.TotalOrganizerRevenue;
+                    organizerRevenue = organizerRevenueData.PaidOrganizerRevenue; // Use PaidOrganizerRevenue instead of TotalOrganizerRevenue
                     organizerTicketCount = organizerRevenueData.TotalIssued;
                 }
 
