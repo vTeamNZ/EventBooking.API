@@ -22,6 +22,11 @@ namespace EventBooking.API.DTOs
         [StringLength(255)]
         public string CustomerEmail { get; set; } = string.Empty;
         
+        /// <summary>
+        /// Seat details for this ticket (seat/ticket numbers)
+        /// </summary>
+        public string? SeatDetails { get; set; }
+        
         public decimal TicketPrice { get; set; }
         
         public bool IsPaid { get; set; }

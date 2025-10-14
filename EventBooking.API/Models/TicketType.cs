@@ -38,8 +38,56 @@ namespace EventBooking.API.Models
         public bool IsStanding { get; set; } = false;
         public int? StandingCapacity { get; set; }
 
+        // State management properties
+        public bool IsActive { get; set; } = true;
+        public bool IsHidden { get; set; } = false;
+        public int? ReplacedBy { get; set; }
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime? DisabledAt { get; set; }
+        public DateTime? HiddenAt { get; set; }
+
         // Navigation properties
         public Event? Event { get; set; }
         public ICollection<Seat> Seats { get; set; } = new List<Seat>();
+        public TicketType? ReplacedByTicketType { get; set; }
+        public ICollection<TicketType> ReplacedTicketTypes { get; set; } = new List<TicketType>();
+
+        // Computed properties for business logic
+        public bool IsAvailableForPurchase => IsActive && !IsHidden;
+        public bool IsVisibleToCustomers => !IsHidden;
+        public bool HasReplacement => ReplacedBy.HasValue;
+
+        // Helper methods for state transitions
+        public void Disable()
+        {
+            IsActive = false;
+            DisabledAt = DateTime.UtcNow;
+        }
+
+        public void Hide()
+        {
+            IsActive = false;
+            IsHidden = true;
+            HiddenAt = DateTime.UtcNow;
+            
+            // If not already disabled, set disabled timestamp too
+            if (DisabledAt == null)
+            {
+                DisabledAt = DateTime.UtcNow;
+            }
+        }
+
+        public void Reactivate()
+        {
+            IsActive = true;
+            IsHidden = false;
+            // Keep timestamps for history - don't reset them
+        }
+
+        public void SetReplacement(int replacementTicketTypeId)
+        {
+            ReplacedBy = replacementTicketTypeId;
+            Hide(); // When replaced, hide the original ticket type
+        }
     }
 }

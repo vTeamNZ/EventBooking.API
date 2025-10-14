@@ -1421,51 +1421,5 @@ namespace EventBooking.API.Controllers
                 });
             }
         }
-        
-        /// <summary>
-        /// Restore a cancelled ticket
-        /// </summary>
-        /// <param name="paymentId">The payment ID to restore</param>
-        /// <returns>Success response</returns>
-        [HttpPut("payments/{paymentId}/restore")]
-        [Authorize(Roles = "Organizer")]
-        public async Task<ActionResult<SimpleOperationResponse>> RestoreTicket(int paymentId)
-        {
-            try
-            {
-                _logger.LogInformation("Restoring ticket for payment {PaymentId}", paymentId);
-                
-                var success = await _salesManagementService.RestoreTicketAsync(paymentId);
-                
-                return Ok(new SimpleOperationResponse
-                {
-                    Success = success,
-                    Message = success ? "Ticket restored successfully" : "Failed to restore ticket"
-                });
-            }
-            catch (KeyNotFoundException ex)
-            {
-                _logger.LogWarning(ex, "Ticket payment {PaymentId} not found", paymentId);
-                return NotFound(new SimpleOperationResponse
-                {
-                    Success = false,
-                    Message = "Ticket not found"
-                });
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                _logger.LogWarning(ex, "Unauthorized access to payment {PaymentId}", paymentId);
-                return Forbid("Access denied");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error restoring ticket for payment {PaymentId}", paymentId);
-                return StatusCode(500, new SimpleOperationResponse
-                {
-                    Success = false,
-                    Message = "An error occurred while restoring the ticket"
-                });
-            }
-        }
     }
 }

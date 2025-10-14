@@ -160,6 +160,9 @@ builder.Services.AddScoped<ISeatAllocationService, SeatAllocationService>();
 // Add Ticket Availability Service
 builder.Services.AddScoped<ITicketAvailabilityService, TicketAvailabilityService>();
 
+// Add Ticket Type State Service
+builder.Services.AddScoped<ITicketTypeStateService, TicketTypeStateService>();
+
 // 🚀 OPTIMIZED ORGANIZER STRIPE SERVICE v1 - Single API call optimization for organizer dashboard
 builder.Services.AddScoped<IOrganizerStripeService, OrganizerStripeService>();
 

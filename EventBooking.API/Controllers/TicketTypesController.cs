@@ -17,15 +17,18 @@ namespace EventBooking.API.Controllers
         private readonly AppDbContext _context;
         private readonly ILogger<TicketTypesController> _logger;
         private readonly ISeatAllocationService _seatAllocationService;
+        private readonly ITicketTypeStateService _ticketTypeStateService;
 
         public TicketTypesController(
             AppDbContext context, 
             ILogger<TicketTypesController> logger,
-            ISeatAllocationService seatAllocationService)
+            ISeatAllocationService seatAllocationService,
+            ITicketTypeStateService ticketTypeStateService)
         {
             _context = context;
             _logger = logger;
             _seatAllocationService = seatAllocationService;
+            _ticketTypeStateService = ticketTypeStateService;
         }
 
         // GET: api/TicketTypes/event/5
@@ -38,6 +41,60 @@ namespace EventBooking.API.Controllers
                 .ToListAsync();
 
             return ticketTypes;
+        }
+
+        // NEW: Get visible ticket types for customers (excludes hidden, includes disabled as "not available")
+        [AllowAnonymous]
+        [HttpGet("event/{eventId}/customer")]
+        public async Task<ActionResult<IEnumerable<TicketTypeWithStateDTO>>> GetVisibleTicketTypesForCustomers(int eventId)
+        {
+            try
+            {
+                var ticketTypes = await _ticketTypeStateService.GetVisibleTicketTypesForCustomers(eventId);
+                return Ok(ticketTypes);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting visible ticket types for event {EventId}", eventId);
+                return StatusCode(500, "An error occurred while retrieving ticket types");
+            }
+        }
+
+        // NEW: Get only active ticket types that customers can purchase
+        [AllowAnonymous]
+        [HttpGet("event/{eventId}/active")]
+        public async Task<ActionResult<IEnumerable<TicketTypeWithStateDTO>>> GetActiveTicketTypesForPurchase(int eventId)
+        {
+            try
+            {
+                var ticketTypes = await _ticketTypeStateService.GetActiveTicketTypesForPurchase(eventId);
+                return Ok(ticketTypes);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting active ticket types for event {EventId}", eventId);
+                return StatusCode(500, "An error occurred while retrieving active ticket types");
+            }
+        }
+
+        // NEW: Get ticket type with state information (for organizers)
+        [HttpGet("{id}/state")]
+        public async Task<ActionResult<TicketTypeWithStateDTO>> GetTicketTypeWithState(int id)
+        {
+            try
+            {
+                var ticketType = await _ticketTypeStateService.GetTicketTypeWithState(id);
+                if (ticketType == null)
+                {
+                    return NotFound();
+                }
+                return Ok(ticketType);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting ticket type state for ID {TicketTypeId}", id);
+                return StatusCode(500, "An error occurred while retrieving ticket type state");
+            }
         }
 
         // POST: api/TicketTypes
@@ -326,6 +383,84 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "Error updating seat allocations for event {EventId}", eventId);
                 return StatusCode(500, new { message = "Error updating seat allocations" });
+            }
+        }
+
+        // NEW: State management endpoints for organizers
+        
+        [HttpPut("{id}/disable")]
+        public async Task<IActionResult> DisableTicketType(int id, [FromBody] DisableTicketTypeRequest request)
+        {
+            try
+            {
+                var success = await _ticketTypeStateService.DisableTicketType(id, request);
+                if (!success)
+                {
+                    return NotFound("Ticket type not found");
+                }
+                return Ok(new { message = "Ticket type disabled successfully" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error disabling ticket type {TicketTypeId}", id);
+                return StatusCode(500, "An error occurred while disabling the ticket type");
+            }
+        }
+
+        [HttpPut("{id}/hide")]
+        public async Task<IActionResult> HideTicketType(int id, [FromBody] HideTicketTypeRequest request)
+        {
+            try
+            {
+                var success = await _ticketTypeStateService.HideTicketType(id, request);
+                if (!success)
+                {
+                    return NotFound("Ticket type not found");
+                }
+                return Ok(new { message = "Ticket type hidden successfully" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error hiding ticket type {TicketTypeId}", id);
+                return StatusCode(500, "An error occurred while hiding the ticket type");
+            }
+        }
+
+        [HttpPut("{id}/reactivate")]
+        public async Task<IActionResult> ReactivateTicketType(int id)
+        {
+            try
+            {
+                var success = await _ticketTypeStateService.ReactivateTicketType(id);
+                if (!success)
+                {
+                    return NotFound("Ticket type not found");
+                }
+                return Ok(new { message = "Ticket type reactivated successfully" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reactivating ticket type {TicketTypeId}", id);
+                return StatusCode(500, "An error occurred while reactivating the ticket type");
+            }
+        }
+
+        [HttpPut("{id}/replace")]
+        public async Task<IActionResult> ReplaceTicketType(int id, [FromBody] ReplaceTicketTypeRequest request)
+        {
+            try
+            {
+                var success = await _ticketTypeStateService.ReplaceTicketType(id, request);
+                if (!success)
+                {
+                    return NotFound("Ticket type not found or replacement ticket type not found");
+                }
+                return Ok(new { message = "Ticket type replacement set successfully" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error setting ticket type replacement for {TicketTypeId}", id);
+                return StatusCode(500, "An error occurred while setting the ticket type replacement");
             }
         }
 

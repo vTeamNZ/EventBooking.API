@@ -113,10 +113,27 @@ namespace EventBooking.API.Data
                 entity.Property(t => t.Price)
                     .HasPrecision(18, 2);
 
+                // Configure state management properties
+                entity.Property(t => t.IsActive)
+                    .HasDefaultValue(true);
+
+                entity.Property(t => t.IsHidden)
+                    .HasDefaultValue(false);
+
+                entity.Property(t => t.CreatedAt)
+                    .HasDefaultValueSql("GETUTCDATE()");
+
+                // Configure relationships
                 entity.HasOne(tt => tt.Event)
                     .WithMany(e => e.TicketTypes)
                     .HasForeignKey(tt => tt.EventId)
                     .OnDelete(DeleteBehavior.Cascade);
+
+                // Configure self-referencing relationship for ticket replacement
+                entity.HasOne(tt => tt.ReplacedByTicketType)
+                    .WithMany(tt => tt.ReplacedTicketTypes)
+                    .HasForeignKey(tt => tt.ReplacedBy)
+                    .OnDelete(DeleteBehavior.Restrict); // Prevent cascading deletes
             });            // Configure Seat relationships
             modelBuilder.Entity<Seat>(entity =>
             {
