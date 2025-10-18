@@ -506,12 +506,36 @@ namespace EventBooking.API.Controllers
                         if (seatsForThisType.Any() && i < seatsForThisType.Count)
                         {
                             var seatNumber = seatsForThisType[i];
-                            // Check if this is a hardcoded general admission seat (A1, A2, A3, etc.)
+                            // 🎯 CONTEXT-AWARE SEAT NUMBER HANDLING: Check if A1, A2, A3 should be converted to TicketType-1 format
                             if (seatNumber.StartsWith("A") && seatNumber.Length <= 3 && 
                                 int.TryParse(seatNumber.Substring(1), out var sequentialNumber))
                             {
-                                // Use ticket type prefix for general admission
-                                identifier = $"{ticketType.Type}-{i + 1}";
+                                // Determine if this should be converted to TicketType-1 format based on event type and ticket type
+                                bool shouldConvertToTicketFormat = false;
+                                
+                                if (eventItem.SeatSelectionMode == SeatSelectionMode.GeneralAdmission)
+                                {
+                                    // GeneralAdmission events always use TicketType-1 format for differentiation
+                                    shouldConvertToTicketFormat = true;
+                                }
+                                else if (eventItem.SeatSelectionMode == SeatSelectionMode.Hybrid)
+                                {
+                                    // For Hybrid events, check if this ticket type is for standing tickets
+                                    // Standing tickets don't have SeatRowAssignments, seated tickets do
+                                    shouldConvertToTicketFormat = string.IsNullOrEmpty(ticketType.SeatRowAssignments);
+                                }
+                                // EventHall events should always preserve seat numbers (shouldConvertToTicketFormat = false)
+                                
+                                if (shouldConvertToTicketFormat)
+                                {
+                                    // Use ticket type prefix for general admission or hybrid standing tickets
+                                    identifier = $"{ticketType.Type}-{i + 1}";
+                                }
+                                else
+                                {
+                                    // Preserve actual seat numbers for allocated seating
+                                    identifier = seatNumber;
+                                }
                             }
                             else
                             {
