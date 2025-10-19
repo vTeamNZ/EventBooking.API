@@ -29,6 +29,7 @@ namespace EventBooking.API.Data
         public DbSet<Venue> Venues { get; set; }
         public DbSet<EventBookingRecord> EventBookings { get; set; } // ✅ Direct ticket booking for organizers
         public DbSet<OrganizerTicketPayment> OrganizerTicketPayments { get; set; } // ✅ Individual ticket payment tracking
+        public DbSet<QREntryLog> QREntryLogs { get; set; } // ✅ QR code entry tracking and audit trail
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

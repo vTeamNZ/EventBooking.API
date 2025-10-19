@@ -867,5 +867,374 @@ namespace EventBooking.API.Services
                 return false;
             }
         }
+
+        #region QR Code Validation Methods
+
+        /// <summary>
+        /// Validates a QR code and returns comprehensive ticket information
+        /// </summary>
+        public async Task<QRValidationResponse> ValidateQRCodeAsync(QRValidationRequest request)
+        {
+            _logger.LogInformation("🔍 QR VALIDATION - Starting validation for QR data: {QRData}", request.QRData);
+
+            var response = new QRValidationResponse
+            {
+                ValidatedAt = DateTime.UtcNow,
+                Status = "Processing"
+            };
+
+            try
+            {
+                // Step 1: Parse QR Data
+                response.QRData = ParseQRData(request.QRData);
+                
+                if (!response.QRData.IsParsed)
+                {
+                    response.IsValid = false;
+                    response.Status = "Invalid";
+                    response.Message = "QR code format is invalid or unrecognized";
+                    _logger.LogWarning("❌ QR VALIDATION - Invalid QR format: {QRData}", request.QRData);
+                    return response;
+                }
+
+                _logger.LogInformation("✅ QR PARSING - Parsed EventID: {EventID}, Seat: {Seat}, Name: {Name}, PaymentGUID: {PaymentGUID}",
+                    response.QRData.EventID, response.QRData.SeatNumber, response.QRData.FirstName, response.QRData.PaymentGUID);
+
+                // Step 2: Validate Event exists and is active
+                var eventInfo = await GetEventInfoAsync(response.QRData.EventID);
+                response.Event = eventInfo;
+
+                if (eventInfo == null)
+                {
+                    response.IsValid = false;
+                    response.Status = "NotFound";
+                    response.Message = $"Event '{response.QRData.EventID}' not found";
+                    _logger.LogWarning("❌ QR VALIDATION - Event not found: {EventID}", response.QRData.EventID);
+                    return response;
+                }
+
+                // Step 3: Find ticket in database
+                var ticketInfo = await GetTicketInfoAsync(response.QRData);
+                response.Ticket = ticketInfo;
+
+                if (ticketInfo == null)
+                {
+                    response.IsValid = false;
+                    response.Status = "NotFound";
+                    response.Message = "Ticket not found in database";
+                    _logger.LogWarning("❌ QR VALIDATION - Ticket not found for PaymentGUID: {PaymentGUID}, Seat: {Seat}",
+                        response.QRData.PaymentGUID, response.QRData.SeatNumber);
+                    return response;
+                }
+
+                // Step 4: Check entry history
+                var entryInfo = await GetEntryInfoAsync(request.QRData);
+                response.Entry = entryInfo;
+
+                // Step 5: Determine validation result
+                if (ticketInfo.Status != "Active")
+                {
+                    response.IsValid = false;
+                    response.Status = "Inactive";
+                    response.Message = $"Ticket status is {ticketInfo.Status}";
+                    _logger.LogWarning("❌ QR VALIDATION - Ticket inactive: Status={Status}", ticketInfo.Status);
+                    return response;
+                }
+
+                if (eventInfo.Date.HasValue && eventInfo.Date.Value.Date < DateTime.Now.Date)
+                {
+                    response.IsValid = false;
+                    response.Status = "Expired";
+                    response.Message = "Event has already passed";
+                    _logger.LogWarning("❌ QR VALIDATION - Event expired: EventDate={EventDate}", eventInfo.Date);
+                    return response;
+                }
+
+                // Allow re-entry by default, but provide entry tracking info
+                response.IsValid = true;
+                response.Status = entryInfo.HasPreviousEntry ? "ValidReEntry" : "Valid";
+                response.Message = entryInfo.HasPreviousEntry 
+                    ? $"Valid ticket - Re-entry #{entryInfo.EntryCount + 1} (Last entry: {entryInfo.LastEntryTime:HH:mm})"
+                    : "Valid ticket - First entry";
+
+                _logger.LogInformation("✅ QR VALIDATION - Success: {Status}, Customer: {Customer}, Event: {Event}",
+                    response.Status, ticketInfo.CustomerName, eventInfo.Title);
+
+                return response;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ QR VALIDATION - Exception during validation");
+                response.IsValid = false;
+                response.Status = "Error";
+                response.Message = "Validation failed due to system error";
+                return response;
+            }
+        }
+
+        /// <summary>
+        /// Parses QR data string into components
+        /// Expected format: "EventID: {eventId}, Event: {eventName}, Seat: {seatNumber}, Name: {firstName}, ID: {paymentGuid}"
+        /// </summary>
+        public QRDataComponents ParseQRData(string qrData)
+        {
+            var components = new QRDataComponents
+            {
+                RawData = qrData,
+                IsParsed = false
+            };
+
+            try
+            {
+                if (string.IsNullOrWhiteSpace(qrData))
+                {
+                    _logger.LogWarning("QR data is null or empty");
+                    return components;
+                }
+
+                // Parse the expected format: "EventID: {eventId}, Event: {eventName}, Seat: {seatNumber}, Name: {firstName}, ID: {paymentGuid}"
+                var parts = qrData.Split(',');
+                if (parts.Length != 5)
+                {
+                    _logger.LogWarning("QR data does not have expected 5 parts: {PartCount}", parts.Length);
+                    return components;
+                }
+
+                foreach (var part in parts)
+                {
+                    var keyValue = part.Trim().Split(':', 2);
+                    if (keyValue.Length != 2) continue;
+
+                    var key = keyValue[0].Trim();
+                    var value = keyValue[1].Trim();
+
+                    switch (key.ToUpper())
+                    {
+                        case "EVENTID":
+                            components.EventID = value;
+                            break;
+                        case "EVENT":
+                            components.EventName = value;
+                            break;
+                        case "SEAT":
+                            components.SeatNumber = value;
+                            break;
+                        case "NAME":
+                            components.FirstName = value;
+                            break;
+                        case "ID":
+                            components.PaymentGUID = value;
+                            break;
+                    }
+                }
+
+                // Validate required fields are present
+                components.IsParsed = !string.IsNullOrEmpty(components.EventID) &&
+                                    !string.IsNullOrEmpty(components.EventName) &&
+                                    !string.IsNullOrEmpty(components.SeatNumber) &&
+                                    !string.IsNullOrEmpty(components.FirstName) &&
+                                    !string.IsNullOrEmpty(components.PaymentGUID);
+
+                _logger.LogDebug("QR parsing result: Parsed={IsParsed}, EventID={EventID}, Name={Name}",
+                    components.IsParsed, components.EventID, components.FirstName);
+
+                return components;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error parsing QR data: {QRData}", qrData);
+                return components;
+            }
+        }
+
+        /// <summary>
+        /// Records an entry attempt for audit trail
+        /// </summary>
+        public async Task LogQREntryAsync(QRValidationRequest request, QRValidationResponse response, string? ipAddress = null, string? userAgent = null)
+        {
+            try
+            {
+                var entryLog = new QREntryLog
+                {
+                    QRData = request.QRData,
+                    EventID = response.QRData?.EventID,
+                    PaymentGUID = response.QRData?.PaymentGUID,
+                    SeatNumber = response.QRData?.SeatNumber,
+                    AttendeeeName = response.QRData?.FirstName,
+                    ScanTime = DateTime.UtcNow,
+                    ScanLocation = request.ScanLocation,
+                    ValidationResult = response.Status,
+                    ScanNotes = request.ScanNotes,
+                    IpAddress = ipAddress,
+                    UserAgent = userAgent
+                };
+
+                _context.QREntryLogs.Add(entryLog);
+                await _context.SaveChangesAsync();
+
+                _logger.LogInformation("📝 QR ENTRY LOG - Recorded: Event={EventID}, Status={Status}, Location={Location}",
+                    entryLog.EventID, entryLog.ValidationResult, entryLog.ScanLocation);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error logging QR entry");
+                // Don't throw - logging failure shouldn't break validation
+            }
+        }
+
+        #region Private Helper Methods for Validation
+
+        /// <summary>
+        /// Gets event information from database
+        /// </summary>
+        private async Task<EventValidationInfo?> GetEventInfoAsync(string eventIdStr)
+        {
+            try
+            {
+                if (!int.TryParse(eventIdStr, out int eventId))
+                {
+                    _logger.LogWarning("Invalid event ID format: {EventID}", eventIdStr);
+                    return null;
+                }
+
+                var eventEntity = await _context.Events
+                    .Include(e => e.Organizer)
+                    .Where(e => e.Id == eventId)
+                    .Select(e => new EventValidationInfo
+                    {
+                        EventId = e.Id,
+                        Title = e.Title,
+                        Description = e.Description ?? "",
+                        Date = e.Date,
+                        Location = e.Location ?? "",
+                        Status = e.Status.ToString(),
+                        OrganizerName = e.Organizer != null ? e.Organizer.Name : "",
+                        OrganizerEmail = e.Organizer != null ? e.Organizer.ContactEmail : "",
+                        ImageUrl = e.ImageUrl ?? ""
+                    })
+                    .FirstOrDefaultAsync();
+
+                return eventEntity;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching event info for ID: {EventID}", eventIdStr);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Gets ticket information from database
+        /// </summary>
+        private async Task<TicketValidationInfo?> GetTicketInfoAsync(QRDataComponents qrData)
+        {
+            try
+            {
+                // First try to find in BookingLineItems (new system)
+                var bookingLineItem = await _context.BookingLineItems
+                    .Include(bli => bli.Booking)
+                    .Where(bli => 
+                        (bli.QRCode == qrData.PaymentGUID || bli.Booking.PaymentIntentId == qrData.PaymentGUID) &&
+                        (bli.SeatDetails.Contains(qrData.SeatNumber) || bli.ItemName.Contains(qrData.SeatNumber)))
+                    .FirstOrDefaultAsync();
+
+                if (bookingLineItem != null)
+                {
+                    var ticketInfo = new TicketValidationInfo
+                    {
+                        BookingId = bookingLineItem.BookingId,
+                        LineItemId = bookingLineItem.Id,
+                        CustomerName = $"{bookingLineItem.Booking.CustomerFirstName} {bookingLineItem.Booking.CustomerLastName}".Trim(),
+                        CustomerEmail = bookingLineItem.Booking.CustomerEmail,
+                        SeatNumber = qrData.SeatNumber,
+                        TicketType = bookingLineItem.ItemName,
+                        Price = bookingLineItem.UnitPrice,
+                        PaymentStatus = bookingLineItem.Booking.PaymentStatus,
+                        BookingDate = bookingLineItem.CreatedAt,
+                        QRCode = bookingLineItem.QRCode ?? "",
+                        Status = bookingLineItem.Status ?? "Active"
+                    };
+
+                    // Get food orders for this ticket
+                    var foodOrders = await _context.BookingLineItems
+                        .Where(bli => bli.BookingId == bookingLineItem.BookingId && 
+                                     bli.ItemType == "Food" && 
+                                     (bli.SeatDetails.Contains(qrData.SeatNumber) || string.IsNullOrEmpty(bli.SeatDetails)))
+                        .Select(bli => new FoodOrderInfo
+                        {
+                            Name = bli.ItemName,
+                            Quantity = bli.Quantity,
+                            UnitPrice = bli.UnitPrice,
+                            TotalPrice = bli.TotalPrice,
+                            Description = bli.ItemDetails,
+                            SeatAssignment = bli.SeatDetails
+                        })
+                        .ToListAsync();
+
+                    ticketInfo.FoodOrders = foodOrders;
+                    return ticketInfo;
+                }
+
+                // Fallback: try to find in EventBookings (legacy system)
+                var eventBooking = await _context.EventBookings
+                    .Where(eb => eb.PaymentGUID == qrData.PaymentGUID && eb.SeatNo == qrData.SeatNumber)
+                    .FirstOrDefaultAsync();
+
+                if (eventBooking != null)
+                {
+                    return new TicketValidationInfo
+                    {
+                        CustomerName = eventBooking.FirstName,
+                        CustomerEmail = eventBooking.BuyerEmail,
+                        SeatNumber = eventBooking.SeatNo,
+                        TicketType = "Standard",
+                        PaymentStatus = "Completed",
+                        BookingDate = eventBooking.CreatedAt,
+                        QRCode = eventBooking.PaymentGUID,
+                        Status = "Active"
+                    };
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching ticket info for PaymentGUID: {PaymentGUID}", qrData.PaymentGUID);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Gets entry history for this ticket
+        /// </summary>
+        private async Task<EntryValidationInfo> GetEntryInfoAsync(string qrData)
+        {
+            try
+            {
+                var entryLogs = await _context.QREntryLogs
+                    .Where(log => log.QRData == qrData && log.ValidationResult == "Valid" || log.ValidationResult == "ValidReEntry")
+                    .OrderBy(log => log.ScanTime)
+                    .ToListAsync();
+
+                return new EntryValidationInfo
+                {
+                    HasPreviousEntry = entryLogs.Any(),
+                    FirstEntryTime = entryLogs.FirstOrDefault()?.ScanTime,
+                    LastEntryTime = entryLogs.LastOrDefault()?.ScanTime,
+                    EntryCount = entryLogs.Count,
+                    LastScanLocation = entryLogs.LastOrDefault()?.ScanLocation,
+                    AllowReEntry = true // Configure this based on business rules
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching entry info for QR data");
+                return new EntryValidationInfo { AllowReEntry = true };
+            }
+        }
+
+        #endregion
+
+        #endregion
     }
 }

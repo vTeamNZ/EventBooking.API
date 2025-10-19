@@ -1,9 +1,10 @@
 using EventBooking.API.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace EventBooking.API.Controllers
 {
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     [ApiController]
     public class TicketsController : ControllerBase
     {
@@ -120,6 +121,95 @@ namespace EventBooking.API.Controllers
             {
                 _logger.LogError(ex, "🎯 ENHANCED EMAIL EXCEPTION - Error in enhanced email ticket generation");
                 return StatusCode(500, new { success = false, errorMessage = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// 🔍 Validates a QR code and returns comprehensive ticket information
+        /// This endpoint is publicly accessible and does not require authentication
+        /// </summary>
+        [AllowAnonymous]
+        [HttpPost("validate-qr")]
+        public async Task<IActionResult> ValidateQRCode([FromBody] QRValidationRequest request)
+        {
+            try
+            {
+                _logger.LogInformation("🔍 QR VALIDATION REQUEST - Validating QR code from location: {Location}", 
+                    request.ScanLocation ?? "Unknown");
+
+                // Validate request
+                if (string.IsNullOrWhiteSpace(request.QRData))
+                {
+                    return BadRequest(new { success = false, message = "QR data is required" });
+                }
+
+                // Get client information for audit trail
+                string? ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+                string? userAgent = HttpContext.Request.Headers["User-Agent"].FirstOrDefault();
+
+                // Perform validation
+                var validationResult = await _qrTicketService.ValidateQRCodeAsync(request);
+
+                // Log the entry attempt
+                await _qrTicketService.LogQREntryAsync(request, validationResult, ipAddress, userAgent);
+
+                // Return comprehensive response
+                var response = new
+                {
+                    success = validationResult.IsValid,
+                    isValid = validationResult.IsValid,
+                    status = validationResult.Status,
+                    message = validationResult.Message,
+                    validatedAt = validationResult.ValidatedAt,
+                    qrData = validationResult.QRData,
+                    ticket = validationResult.Ticket,
+                    eventInfo = validationResult.Event,
+                    entryInfo = validationResult.Entry
+                };
+
+                if (validationResult.IsValid)
+                {
+                    _logger.LogInformation("✅ QR VALIDATION SUCCESS - {Status}: {CustomerName} for {EventTitle}", 
+                        validationResult.Status, validationResult.Ticket?.CustomerName, validationResult.Event?.Title);
+                }
+                else
+                {
+                    _logger.LogWarning("❌ QR VALIDATION FAILED - {Status}: {Message}", 
+                        validationResult.Status, validationResult.Message);
+                }
+
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "🔍 QR VALIDATION EXCEPTION - Error validating QR code");
+                return StatusCode(500, new 
+                { 
+                    success = false, 
+                    isValid = false,
+                    status = "Error",
+                    message = "Validation failed due to system error",
+                    validatedAt = DateTime.UtcNow
+                });
+            }
+        }
+
+        /// <summary>
+        /// 📊 Gets QR entry statistics for an event (Admin/Organizer only)
+        /// </summary>
+        [HttpGet("qr-stats/{eventId}")]
+        public async Task<IActionResult> GetQRStats(int eventId)
+        {
+            try
+            {
+                // This could be extended to provide entry statistics
+                // For now, just return a simple response
+                return Ok(new { message = "QR stats endpoint - implementation pending", eventId });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error getting QR stats for event {EventId}", eventId);
+                return StatusCode(500, new { success = false, message = "Failed to get QR statistics" });
             }
         }
     }
