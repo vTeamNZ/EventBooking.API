@@ -929,6 +929,18 @@ namespace EventBooking.API.Services
 
                 // Step 4: Check entry history
                 var entryInfo = await GetEntryInfoAsync(request.QRData);
+                
+                // Convert entry times to New Zealand timezone before returning
+                var nzTimeZone = TimeZoneInfo.FindSystemTimeZoneById("New Zealand Standard Time");
+                if (entryInfo.FirstEntryTime.HasValue)
+                {
+                    entryInfo.FirstEntryTime = TimeZoneInfo.ConvertTimeFromUtc(entryInfo.FirstEntryTime.Value, nzTimeZone);
+                }
+                if (entryInfo.LastEntryTime.HasValue)
+                {
+                    entryInfo.LastEntryTime = TimeZoneInfo.ConvertTimeFromUtc(entryInfo.LastEntryTime.Value, nzTimeZone);
+                }
+                
                 response.Entry = entryInfo;
 
                 // Step 5: Determine validation result
@@ -953,9 +965,14 @@ namespace EventBooking.API.Services
                 // Allow re-entry by default, but provide entry tracking info
                 response.IsValid = true;
                 response.Status = entryInfo.HasPreviousEntry ? "ValidReEntry" : "Valid";
-                response.Message = entryInfo.HasPreviousEntry 
-                    ? $"Valid ticket - Re-entry #{entryInfo.EntryCount + 1} (Last entry: {entryInfo.LastEntryTime:HH:mm})"
-                    : "Valid ticket - First entry";
+                
+                // Build re-entry message with 12-hour format (times already converted to NZ timezone above)
+                string reEntryMessage = "Valid ticket - First entry";
+                if (entryInfo.HasPreviousEntry && entryInfo.LastEntryTime.HasValue)
+                {
+                    reEntryMessage = $"Valid ticket - Re-entry #{entryInfo.EntryCount + 1} (Last entry: {entryInfo.LastEntryTime.Value:hh:mm tt})";
+                }
+                response.Message = reEntryMessage;
 
                 _logger.LogInformation("✅ QR VALIDATION - Success: {Status}, Customer: {Customer}, Event: {Event}",
                     response.Status, ticketInfo.CustomerName, eventInfo.Title);
@@ -1124,82 +1141,225 @@ namespace EventBooking.API.Services
         }
 
         /// <summary>
-        /// Gets ticket information from database
+        /// Gets ticket information from database with enhanced validation
         /// </summary>
         private async Task<TicketValidationInfo?> GetTicketInfoAsync(QRDataComponents qrData)
         {
             try
             {
-                // First try to find in BookingLineItems (new system)
-                var bookingLineItem = await _context.BookingLineItems
-                    .Include(bli => bli.Booking)
-                    .Where(bli => 
-                        (bli.QRCode == qrData.PaymentGUID || bli.Booking.PaymentIntentId == qrData.PaymentGUID) &&
-                        (bli.SeatDetails.Contains(qrData.SeatNumber) || bli.ItemName.Contains(qrData.SeatNumber)))
+                _logger.LogInformation("🔍 ENHANCED VALIDATION - Step 1: Looking for booking with EventID={EventID}, PaymentID={PaymentID}",
+                    qrData.EventID, qrData.PaymentGUID);
+
+                // Step 1: Find the booking by EventID + PaymentIntentId (REQUIRED MATCH)
+                if (!int.TryParse(qrData.EventID, out int eventId))
+                {
+                    _logger.LogWarning("❌ Invalid EventID format: {EventID}", qrData.EventID);
+                    return null;
+                }
+
+                var booking = await _context.Bookings
+                    .Where(b => b.EventId == eventId && b.PaymentIntentId == qrData.PaymentGUID)
                     .FirstOrDefaultAsync();
 
-                if (bookingLineItem != null)
+                if (booking == null)
                 {
-                    var ticketInfo = new TicketValidationInfo
-                    {
-                        BookingId = bookingLineItem.BookingId,
-                        LineItemId = bookingLineItem.Id,
-                        CustomerName = $"{bookingLineItem.Booking.CustomerFirstName} {bookingLineItem.Booking.CustomerLastName}".Trim(),
-                        CustomerEmail = bookingLineItem.Booking.CustomerEmail,
-                        SeatNumber = qrData.SeatNumber,
-                        TicketType = bookingLineItem.ItemName,
-                        Price = bookingLineItem.UnitPrice,
-                        PaymentStatus = bookingLineItem.Booking.PaymentStatus,
-                        BookingDate = bookingLineItem.CreatedAt,
-                        QRCode = bookingLineItem.QRCode ?? "",
-                        Status = bookingLineItem.Status ?? "Active"
-                    };
+                    _logger.LogWarning("❌ ENHANCED VALIDATION - Booking not found for EventID={EventID}, PaymentID={PaymentID}",
+                        qrData.EventID, qrData.PaymentGUID);
+                    return null;
+                }
 
-                    // Get food orders for this ticket
-                    var foodOrders = await _context.BookingLineItems
-                        .Where(bli => bli.BookingId == bookingLineItem.BookingId && 
-                                     bli.ItemType == "Food" && 
-                                     (bli.SeatDetails.Contains(qrData.SeatNumber) || string.IsNullOrEmpty(bli.SeatDetails)))
-                        .Select(bli => new FoodOrderInfo
+                _logger.LogInformation("✅ ENHANCED VALIDATION - Step 2: Booking found (ID={BookingID}). Checking CustomerName match",
+                    booking.Id);
+
+                // Step 2: Check Customer Name (SOFT MATCH - log but don't fail)
+                bool nameMatches = booking.CustomerFirstName.Equals(qrData.FirstName, StringComparison.OrdinalIgnoreCase);
+                if (!nameMatches)
+                {
+                    _logger.LogWarning("⚠️ ENHANCED VALIDATION - Name mismatch: QR has '{QRName}', DB has '{DBName}'",
+                        qrData.FirstName, booking.CustomerFirstName);
+                }
+
+                _logger.LogInformation("✅ ENHANCED VALIDATION - Step 3: Getting all BookingLineItems for BookingID={BookingID}",
+                    booking.Id);
+
+                // Step 3: Get ALL BookingLineItems for this booking
+                var allLineItems = await _context.BookingLineItems
+                    .Where(bli => bli.BookingId == booking.Id && bli.ItemType == "Ticket")
+                    .ToListAsync();
+
+                if (!allLineItems.Any())
+                {
+                    _logger.LogWarning("❌ ENHANCED VALIDATION - No line items found for BookingID={BookingID}", booking.Id);
+                    return null;
+                }
+
+                _logger.LogInformation("✅ ENHANCED VALIDATION - Step 4: Found {Count} line items. Validating Seat '{Seat}'",
+                    allLineItems.Count, qrData.SeatNumber);
+
+                // Step 4: Find which line item contains this seat/ticket
+                BookingLineItem? matchedLineItem = null;
+
+                foreach (var lineItem in allLineItems)
+                {
+                    try
+                    {
+                        if (string.IsNullOrEmpty(lineItem.SeatDetails))
+                            continue;
+
+                        // Parse the SeatDetails JSON
+                        var seatDetailsJson = JsonDocument.Parse(lineItem.SeatDetails);
+                        var root = seatDetailsJson.RootElement;
+
+                        // Get eventSeatMode to determine which array to check
+                        string? eventSeatMode = null;
+                        if (root.TryGetProperty("eventSeatMode", out var modeElement))
                         {
-                            Name = bli.ItemName,
-                            Quantity = bli.Quantity,
-                            UnitPrice = bli.UnitPrice,
-                            TotalPrice = bli.TotalPrice,
-                            Description = bli.ItemDetails,
-                            SeatAssignment = bli.SeatDetails
-                        })
-                        .ToListAsync();
+                            eventSeatMode = modeElement.GetString();
+                        }
 
-                    ticketInfo.FoodOrders = foodOrders;
-                    return ticketInfo;
-                }
+                        _logger.LogDebug("🔍 Checking LineItem {LineItemID}: eventSeatMode={Mode}",
+                            lineItem.Id, eventSeatMode ?? "unknown");
 
-                // Fallback: try to find in EventBookings (legacy system)
-                var eventBooking = await _context.EventBookings
-                    .Where(eb => eb.PaymentGUID == qrData.PaymentGUID && eb.SeatNo == qrData.SeatNumber)
-                    .FirstOrDefaultAsync();
+                        bool seatFound = false;
 
-                if (eventBooking != null)
-                {
-                    return new TicketValidationInfo
+                        if (eventSeatMode == "GeneralAdmission")
+                        {
+                            // Check allocatedTickets array
+                            if (root.TryGetProperty("allocatedTickets", out var ticketsElement) && 
+                                ticketsElement.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var ticket in ticketsElement.EnumerateArray())
+                                {
+                                    var ticketValue = ticket.GetString();
+                                    if (ticketValue != null && ticketValue.Equals(qrData.SeatNumber, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        seatFound = true;
+                                        _logger.LogInformation("✅ MATCH FOUND - GeneralAdmission ticket '{Ticket}' in LineItem {LineItemID}",
+                                            qrData.SeatNumber, lineItem.Id);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        else if (eventSeatMode == "EventHall")
+                        {
+                            // Check allocatedSeats array
+                            if (root.TryGetProperty("allocatedSeats", out var seatsElement) && 
+                                seatsElement.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var seat in seatsElement.EnumerateArray())
+                                {
+                                    var seatValue = seat.GetString();
+                                    if (seatValue != null && seatValue.Equals(qrData.SeatNumber, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        seatFound = true;
+                                        _logger.LogInformation("✅ MATCH FOUND - EventHall seat '{Seat}' in LineItem {LineItemID}",
+                                            qrData.SeatNumber, lineItem.Id);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        else if (eventSeatMode == "Hybrid")
+                        {
+                            // Check BOTH allocatedSeats AND allocatedTickets arrays
+                            if (root.TryGetProperty("allocatedSeats", out var seatsElement) && 
+                                seatsElement.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var seat in seatsElement.EnumerateArray())
+                                {
+                                    var seatValue = seat.GetString();
+                                    if (seatValue != null && seatValue.Equals(qrData.SeatNumber, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        seatFound = true;
+                                        _logger.LogInformation("✅ MATCH FOUND - Hybrid seat '{Seat}' in LineItem {LineItemID}",
+                                            qrData.SeatNumber, lineItem.Id);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!seatFound && root.TryGetProperty("allocatedTickets", out var ticketsElement) && 
+                                ticketsElement.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var ticket in ticketsElement.EnumerateArray())
+                                {
+                                    var ticketValue = ticket.GetString();
+                                    if (ticketValue != null && ticketValue.Equals(qrData.SeatNumber, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        seatFound = true;
+                                        _logger.LogInformation("✅ MATCH FOUND - Hybrid ticket '{Ticket}' in LineItem {LineItemID}",
+                                            qrData.SeatNumber, lineItem.Id);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (seatFound)
+                        {
+                            matchedLineItem = lineItem;
+                            break;
+                        }
+                    }
+                    catch (JsonException ex)
                     {
-                        CustomerName = eventBooking.FirstName,
-                        CustomerEmail = eventBooking.BuyerEmail,
-                        SeatNumber = eventBooking.SeatNo,
-                        TicketType = "Standard",
-                        PaymentStatus = "Completed",
-                        BookingDate = eventBooking.CreatedAt,
-                        QRCode = eventBooking.PaymentGUID,
-                        Status = "Active"
-                    };
+                        _logger.LogWarning(ex, "⚠️ Failed to parse SeatDetails JSON for LineItem {LineItemID}", lineItem.Id);
+                        continue;
+                    }
                 }
 
-                return null;
+                if (matchedLineItem == null)
+                {
+                    _logger.LogWarning("❌ ENHANCED VALIDATION - Seat '{Seat}' not found in any BookingLineItem for BookingID={BookingID}",
+                        qrData.SeatNumber, booking.Id);
+                    return null;
+                }
+
+                _logger.LogInformation("✅ ENHANCED VALIDATION - Complete! All validations passed for BookingID={BookingID}, LineItemID={LineItemID}",
+                    booking.Id, matchedLineItem.Id);
+
+                // Step 5: Build response with matched line item
+                var ticketInfo = new TicketValidationInfo
+                {
+                    BookingId = booking.Id,
+                    LineItemId = matchedLineItem.Id,
+                    CustomerName = $"{booking.CustomerFirstName} {booking.CustomerLastName}".Trim(),
+                    CustomerEmail = booking.CustomerEmail,
+                    SeatNumber = qrData.SeatNumber,
+                    TicketType = matchedLineItem.ItemName,
+                    Price = matchedLineItem.UnitPrice,
+                    PaymentStatus = booking.PaymentStatus,
+                    BookingDate = matchedLineItem.CreatedAt,
+                    QRCode = matchedLineItem.QRCode ?? qrData.PaymentGUID,
+                    Status = matchedLineItem.Status ?? "Active"
+                };
+
+                // Get food orders for this booking
+                var foodOrders = await _context.BookingLineItems
+                    .Where(bli => bli.BookingId == booking.Id && bli.ItemType == "Food")
+                    .Select(bli => new FoodOrderInfo
+                    {
+                        Name = bli.ItemName,
+                        Quantity = bli.Quantity,
+                        UnitPrice = bli.UnitPrice,
+                        TotalPrice = bli.TotalPrice,
+                        Description = bli.ItemDetails,
+                        SeatAssignment = bli.SeatDetails
+                    })
+                    .ToListAsync();
+
+                ticketInfo.FoodOrders = foodOrders;
+
+                _logger.LogInformation("✅ ENHANCED VALIDATION - Returning ticket info: Customer={Customer}, Seat={Seat}, Type={Type}, FoodOrders={FoodCount}",
+                    ticketInfo.CustomerName, ticketInfo.SeatNumber, ticketInfo.TicketType, foodOrders.Count);
+
+                return ticketInfo;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error fetching ticket info for PaymentGUID: {PaymentGUID}", qrData.PaymentGUID);
+                _logger.LogError(ex, "❌ ENHANCED VALIDATION - Exception for PaymentGUID: {PaymentGUID}, Seat: {Seat}",
+                    qrData.PaymentGUID, qrData.SeatNumber);
                 return null;
             }
         }
@@ -1212,7 +1372,7 @@ namespace EventBooking.API.Services
             try
             {
                 var entryLogs = await _context.QREntryLogs
-                    .Where(log => log.QRData == qrData && log.ValidationResult == "Valid" || log.ValidationResult == "ValidReEntry")
+                    .Where(log => log.QRData == qrData && (log.ValidationResult == "Valid" || log.ValidationResult == "ValidReEntry"))
                     .OrderBy(log => log.ScanTime)
                     .ToListAsync();
 
