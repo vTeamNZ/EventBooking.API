@@ -12,7 +12,7 @@ param(
     [string]$StripeSecretKey = "",
     
     [Parameter(Mandatory=$false)]
-    [switch]$IncludeProcessingFees = $true,
+    [switch]$IncludeProcessingFees,
     
     [Parameter(Mandatory=$false)]
     [switch]$UseDateFilter = $true,
@@ -268,82 +268,21 @@ if ($eventSessions.Count -eq 0) {
     exit 0
 }
 
-# Fetch balance transactions to get actual Stripe fees
-Write-Host ""
-Write-Host "4. Fetching balance transactions from Stripe..." -ForegroundColor Yellow
-
-# Build a map of balance transactions by amount and time for fast lookup
-$balanceTransactionMap = @{}
-$hasMore = $true
-$startingAfter = $null
-$balanceTransactionCount = 0
-
-try {
-    Write-Host "   Fetching balance transactions (this may take a moment)..." -ForegroundColor Cyan
-    
-    while ($hasMore) {
-        $btUrl = "https://api.stripe.com/v1/balance_transactions?limit=100"
-        if ($startDate) {
-            $unixTimestamp = [int][double]::Parse((Get-Date $startDate -UFormat %s))
-            $btUrl += "&created[gte]=$unixTimestamp"
-        }
-        if ($startingAfter) {
-            $btUrl += "&starting_after=$startingAfter"
-        }
-        
-        $btResponse = Invoke-RestMethod -Uri $btUrl -Headers $headers -Method GET
-        
-        foreach ($bt in $btResponse.data) {
-            # Only process payment-related transactions
-            if ($bt.type -eq "charge" -or $bt.type -eq "payment") {
-                $key = "$($bt.amount)_$($bt.created)"
-                if (-not $balanceTransactionMap.ContainsKey($key)) {
-                    $balanceTransactionMap[$key] = @{
-                        Amount = $bt.amount / 100
-                        Fee = $bt.fee / 100
-                        Net = $bt.net / 100
-                        Created = $bt.created
-                        Id = $bt.id
-                    }
-                    $balanceTransactionCount++
-                }
-            }
-        }
-        
-        $hasMore = $btResponse.has_more
-        if ($hasMore -and $btResponse.data.Count -gt 0) {
-            $startingAfter = $btResponse.data[-1].id
-        } else {
-            $hasMore = $false
-        }
-        
-        # Stop if we have enough data (optional limit for performance)
-        if ($balanceTransactionCount -ge 1000) {
-            Write-Host "   Reached 1000 balance transactions, stopping fetch..." -ForegroundColor Yellow
-            break
-        }
-    }
-    
-    Write-Host "   Balance transactions loaded: $balanceTransactionCount" -ForegroundColor Green
-    
-} catch {
-    Write-Error "Failed to fetch balance transactions: $($_.Exception.Message)"
-    Write-Host "   Cannot proceed without balance transaction data. Exiting..." -ForegroundColor Red
-    exit 1
-}
+# Load fee configuration from appsettings
+$processingFeeConfig = $config.ProcessingFee
+$afterPayFeeConfig = $config.AfterPayFee
 
 # Analyze ticket types
 Write-Host ""
-Write-Host "5. Analyzing ticket types and matching with balance transactions..." -ForegroundColor Yellow
+Write-Host "4. Analyzing ticket types..." -ForegroundColor Yellow
 
 $ticketTypes = @{}
 $totalStripeRevenue = 0
 $totalStripeFees = 0
 $totalPlatformFees = 0
+$totalPlatformAfterPayFees = 0
 $afterPayTransactions = 0
 $regularTransactions = 0
-$matchedTransactions = 0
-$unmatchedTransactions = 0
 
 # Arrays to store detailed transaction data for CSV export
 $detailedTransactions = @()
@@ -352,7 +291,7 @@ $ticketTypeBreakdown = @()
 foreach ($session in $eventSessions) {
     $totalStripeRevenue += $session.amount_total / 100
     
-    # Calculate pure ticket revenue from metadata
+    # Calculate fees for this session
     $sessionTicketTotal = 0
     $isAfterPay = $session.metadata.useAfterPay -eq "True"
     
@@ -367,9 +306,6 @@ foreach ($session in $eventSessions) {
         CreatedDate = ([DateTime]'1970-01-01Z').AddSeconds($session.created).ToString("yyyy-MM-dd HH:mm:ss")
         EventTitle = $session.metadata.eventTitle
         TicketDetails = @()
-        TicketRevenue = 0
-        StripeFee = 0
-        PlatformFee = 0
     }
     
     if ($session.metadata.ticketDetails) {
@@ -408,69 +344,38 @@ foreach ($session in $eventSessions) {
                 $ticketTypes[$type].CustomerEmails += $session.metadata.customerFirstName + " " + $session.metadata.customerLastName
             }
             
-            # Store pure ticket revenue
-            $sessionDetail.TicketRevenue = $sessionTicketTotal
-            
-            # Fetch actual Stripe fee from PaymentIntent or Charge
-            $sessionStripeFee = 0
-            $feeSource = "None"
-            
-            # Match this session to a balance transaction
-            # Try exact match first (amount + timestamp)
-            $sessionAmount = $session.amount_total
-            $sessionTime = $session.created
-            $exactKey = "$($sessionAmount)_$($sessionTime)"
-            
-            if ($balanceTransactionMap.ContainsKey($exactKey)) {
-                $bt = $balanceTransactionMap[$exactKey]
-                $sessionStripeFee = $bt.Fee
-                $feeSource = "ExactMatch"
-                $matchedTransactions++
-            } else {
-                # Try fuzzy match: same amount within ±10 minutes
-                $matched = $false
-                foreach ($key in $balanceTransactionMap.Keys) {
-                    $bt = $balanceTransactionMap[$key]
-                    if ($bt.Amount -eq ($sessionAmount / 100)) {
-                        $timeDiff = [Math]::Abs($bt.Created - $sessionTime)
-                        if ($timeDiff -le 600) {  # 10 minutes = 600 seconds
-                            $sessionStripeFee = $bt.Fee
-                            $feeSource = "FuzzyMatch(${timeDiff}s)"
-                            $matchedTransactions++
-                            $matched = $true
-                            break
-                        }
-                    }
+            # Calculate fees for this session
+            if ($processingFeeConfig -and $afterPayFeeConfig) {
+                if ($isAfterPay) {
+                    $afterPayTransactions++
+                    # AfterPay: 6% + $0.30 (Stripe portion)
+                    $sessionStripeFee = ($sessionTicketTotal * ($afterPayFeeConfig.Percentage / 100)) + $afterPayFeeConfig.FixedAmount
+                    $sessionPlatformFee = 0  # No regular platform fee for AfterPay
+                    
+                    # Platform AfterPay fee: Additional platform charge on top of AfterPay
+                    # This is typically the difference between what customer pays and what goes to Stripe
+                    $sessionPlatformAfterPayFee = ($session.amount_total / 100) - $sessionTicketTotal - $sessionStripeFee
+                    if ($sessionPlatformAfterPayFee -lt 0) { $sessionPlatformAfterPayFee = 0 }
+                    
+                    $totalPlatformAfterPayFees += $sessionPlatformAfterPayFee
+                } else {
+                    $regularTransactions++
+                    # Regular: 2.85% + $0.30 (Stripe) + Platform fee
+                    $sessionStripeFee = ($sessionTicketTotal * 0.0285) + 0.30
+                    
+                    # Platform fee: 2.5% with $10 max
+                    $platformFeeAmount = $sessionTicketTotal * ($processingFeeConfig.Percentage / 100)
+                    $sessionPlatformFee = [Math]::Min($platformFeeAmount, $processingFeeConfig.MaxFee)
                 }
                 
-                if (-not $matched) {
-                    $unmatchedTransactions++
-                }
+                $totalStripeFees += $sessionStripeFee
+                $totalPlatformFees += $sessionPlatformFee
+                
+                # Add fee details to session
+                $sessionDetail.StripeFee = [Math]::Round($sessionStripeFee, 2)
+                $sessionDetail.PlatformFee = [Math]::Round($sessionPlatformFee, 2)
+                $sessionDetail.PlatformAfterPayFee = [Math]::Round($sessionPlatformAfterPayFee, 2)
             }
-            
-            if ($matchedTransactions + $unmatchedTransactions -le 3) {
-                Write-Host "   [DEBUG] Session $($session.id.Substring(0,20))...: Ticket=$sessionTicketTotal, StripeFee=$sessionStripeFee (from $feeSource), Total=$($session.amount_total / 100)" -ForegroundColor DarkGray
-            }
-            
-            # Calculate platform fee as the difference
-            # Total Amount = Ticket Price + Stripe Fee + Platform Fee
-            # Platform Fee = Total Amount - Ticket Price - Stripe Fee
-            $sessionPlatformFee = ($session.amount_total / 100) - $sessionTicketTotal - $sessionStripeFee
-            if ($sessionPlatformFee -lt 0) { $sessionPlatformFee = 0 }
-            
-            # Track payment method
-            if ($isAfterPay) {
-                $afterPayTransactions++
-            } else {
-                $regularTransactions++
-            }
-            
-            $totalStripeFees += $sessionStripeFee
-            $totalPlatformFees += $sessionPlatformFee
-            
-            # Add fee details to session
-            $sessionDetail.StripeFee = [Math]::Round($sessionStripeFee, 2)
-            $sessionDetail.PlatformFee = [Math]::Round($sessionPlatformFee, 2)
             
             # Add session to detailed transactions
             $detailedTransactions += $sessionDetail
@@ -485,10 +390,8 @@ foreach ($session in $eventSessions) {
 $totalTicketRevenue = ($ticketTypes.Values | ForEach-Object { $_.Revenue } | Measure-Object -Sum).Sum
 $totalTickets = ($ticketTypes.Values | ForEach-Object { $_.Quantity } | Measure-Object -Sum).Sum
 $totalTransactions = $eventSessions.Count
-$totalPlatformRevenue = $totalPlatformFees
+$totalPlatformRevenue = $totalPlatformFees + $totalPlatformAfterPayFees
 $actualTotalFees = $totalStripeRevenue - $totalTicketRevenue
-
-Write-Host "   Balance transaction matching: $matchedTransactions matched, $unmatchedTransactions unmatched" -ForegroundColor Cyan
 
 # Prepare ticket type breakdown for CSV
 foreach ($entry in $ticketTypes.GetEnumerator()) {
@@ -521,18 +424,17 @@ if ($startDate) {
 Write-Host "  Total Ticket Revenue: $totalTicketRevenue NZD (excluding processing fees)"
 if ($IncludeProcessingFees) {
     Write-Host "  --- PROCESSING FEES BREAKDOWN ---" -ForegroundColor Yellow
-    Write-Host "  Stripe Processing Fees (Actual): $([Math]::Round($totalStripeFees, 2)) NZD" -ForegroundColor Cyan
-    Write-Host "  Platform Fees (Your Revenue): $([Math]::Round($totalPlatformFees, 2)) NZD" -ForegroundColor Green
+    Write-Host "  Stripe Processing Fees: $([Math]::Round($totalStripeFees, 2)) NZD"
+    Write-Host "  Platform Fees (Regular): $([Math]::Round($totalPlatformFees, 2)) NZD"
+    if ($totalPlatformAfterPayFees -gt 0) {
+        Write-Host "  Platform AfterPay Fees: $([Math]::Round($totalPlatformAfterPayFees, 2)) NZD"
+    }
+    Write-Host "  Platform Total Fees: $([Math]::Round($totalPlatformRevenue, 2)) NZD" -ForegroundColor Green
     Write-Host "  Total All Fees: $([Math]::Round($actualTotalFees, 2)) NZD"
     Write-Host "  --- PAYMENT METHOD BREAKDOWN ---" -ForegroundColor Yellow
     Write-Host "  Regular Payments: $regularTransactions transactions"
     Write-Host "  AfterPay Payments: $afterPayTransactions transactions"
     Write-Host "  Total Stripe Revenue: $([Math]::Round($totalStripeRevenue, 2)) NZD (including all fees)"
-    Write-Host ""
-    Write-Host "  --- REVENUE BREAKDOWN ---" -ForegroundColor Yellow
-    Write-Host "  Ticket Sales: $([Math]::Round($totalTicketRevenue, 2)) NZD ($([Math]::Round(($totalTicketRevenue / $totalStripeRevenue) * 100, 1))%)" -ForegroundColor White
-    Write-Host "  Stripe Fees: $([Math]::Round($totalStripeFees, 2)) NZD ($([Math]::Round(($totalStripeFees / $totalStripeRevenue) * 100, 1))%)" -ForegroundColor White
-    Write-Host "  Platform Revenue: $([Math]::Round($totalPlatformFees, 2)) NZD ($([Math]::Round(($totalPlatformFees / $totalStripeRevenue) * 100, 1))%)" -ForegroundColor Green
 }
 Write-Host "  Total Tickets Sold: $totalTickets"
 Write-Host "  Total Transactions: $totalTransactions"
@@ -660,11 +562,11 @@ if ($ExportCSV -or -not [string]::IsNullOrEmpty($ExportPath)) {
         Write-Host "   ✓ Ticket types exported to: $ticketTypeFile" -ForegroundColor Green
         
         # 2. Export detailed transactions with expanded ticket details
-        $transactionDetails = [System.Collections.ArrayList]@()
+        $transactionDetails = @()
         foreach ($transaction in $detailedTransactions) {
-            if ($transaction.TicketDetails -and $transaction.TicketDetails.Count -gt 0) {
+            if ($transaction.TicketDetails.Count -gt 0) {
                 foreach ($ticket in $transaction.TicketDetails) {
-                    $null = $transactionDetails.Add([PSCustomObject]@{
+                    $transactionDetails += [PSCustomObject]@{
                         SessionId = $transaction.SessionId
                         CustomerName = $transaction.CustomerName
                         CustomerEmail = $transaction.CustomerEmail
@@ -676,15 +578,15 @@ if ($ExportCSV -or -not [string]::IsNullOrEmpty($ExportPath)) {
                         Quantity = $ticket.Quantity
                         UnitPrice = $ticket.UnitPrice
                         TicketTotalPrice = $ticket.TotalPrice
-                        SessionTicketRevenue = $transaction.TicketRevenue
-                        StripeFee = $transaction.StripeFee
-                        PlatformFee = $transaction.PlatformFee
                         SessionTotalAmount = $transaction.TotalAmount
-                    })
+                        StripeFee = if ($transaction.StripeFee) { $transaction.StripeFee } else { 0 }
+                        PlatformFee = if ($transaction.PlatformFee) { $transaction.PlatformFee } else { 0 }
+                        PlatformAfterPayFee = if ($transaction.PlatformAfterPayFee) { $transaction.PlatformAfterPayFee } else { 0 }
+                    }
                 }
             } else {
                 # Transaction without ticket details
-                $null = $transactionDetails.Add([PSCustomObject]@{
+                $transactionDetails += [PSCustomObject]@{
                     SessionId = $transaction.SessionId
                     CustomerName = $transaction.CustomerName
                     CustomerEmail = $transaction.CustomerEmail
@@ -696,11 +598,11 @@ if ($ExportCSV -or -not [string]::IsNullOrEmpty($ExportPath)) {
                     Quantity = 0
                     UnitPrice = 0
                     TicketTotalPrice = 0
-                    SessionTicketRevenue = 0
-                    StripeFee = $transaction.StripeFee
-                    PlatformFee = $transaction.PlatformFee
                     SessionTotalAmount = $transaction.TotalAmount
-                })
+                    StripeFee = if ($transaction.StripeFee) { $transaction.StripeFee } else { 0 }
+                    PlatformFee = if ($transaction.PlatformFee) { $transaction.PlatformFee } else { 0 }
+                    PlatformAfterPayFee = if ($transaction.PlatformAfterPayFee) { $transaction.PlatformAfterPayFee } else { 0 }
+                }
             }
         }
         
@@ -711,23 +613,18 @@ if ($ExportCSV -or -not [string]::IsNullOrEmpty($ExportPath)) {
         # 3. Export summary report
         $summaryData = @(
             [PSCustomObject]@{ Metric = "Event Name"; Value = $EventName }
-            [PSCustomObject]@{ Metric = "Analysis Date"; Value = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
+            [PSCustomObject]@{ Metric = "Total Ticket Revenue (NZD)"; Value = $totalTicketRevenue }
+            [PSCustomObject]@{ Metric = "Total Tickets Sold"; Value = $totalTickets }
             [PSCustomObject]@{ Metric = "Total Transactions"; Value = $totalTransactions }
             [PSCustomObject]@{ Metric = "Regular Payment Transactions"; Value = $regularTransactions }
             [PSCustomObject]@{ Metric = "AfterPay Transactions"; Value = $afterPayTransactions }
-            [PSCustomObject]@{ Metric = "--- REVENUE BREAKDOWN ---"; Value = "" }
-            [PSCustomObject]@{ Metric = "Ticket Revenue (NZD)"; Value = [Math]::Round($totalTicketRevenue, 2) }
-            [PSCustomObject]@{ Metric = "Stripe Fees (NZD)"; Value = [Math]::Round($totalStripeFees, 2) }
-            [PSCustomObject]@{ Metric = "Platform Revenue (NZD)"; Value = [Math]::Round($totalPlatformFees, 2) }
             [PSCustomObject]@{ Metric = "Total Stripe Revenue (NZD)"; Value = [Math]::Round($totalStripeRevenue, 2) }
-            [PSCustomObject]@{ Metric = "--- TICKET STATS ---"; Value = "" }
-            [PSCustomObject]@{ Metric = "Total Tickets Sold"; Value = $totalTickets }
+            [PSCustomObject]@{ Metric = "Stripe Processing Fees (NZD)"; Value = [Math]::Round($totalStripeFees, 2) }
+            [PSCustomObject]@{ Metric = "Platform Fees Regular (NZD)"; Value = [Math]::Round($totalPlatformFees, 2) }
+            [PSCustomObject]@{ Metric = "Platform AfterPay Fees (NZD)"; Value = [Math]::Round($totalPlatformAfterPayFees, 2) }
             [PSCustomObject]@{ Metric = "Average Ticket Price (NZD)"; Value = [Math]::Round($totalTicketRevenue / $totalTickets, 2) }
             [PSCustomObject]@{ Metric = "Unique Ticket Types"; Value = $ticketTypes.Count }
-            [PSCustomObject]@{ Metric = "--- FEE PERCENTAGES ---"; Value = "" }
-            [PSCustomObject]@{ Metric = "Stripe Fee %"; Value = [Math]::Round(($totalStripeFees / $totalStripeRevenue) * 100, 2) }
-            [PSCustomObject]@{ Metric = "Platform Fee %"; Value = [Math]::Round(($totalPlatformFees / $totalStripeRevenue) * 100, 2) }
-            [PSCustomObject]@{ Metric = "Ticket Revenue %"; Value = [Math]::Round(($totalTicketRevenue / $totalStripeRevenue) * 100, 2) }
+            [PSCustomObject]@{ Metric = "Analysis Date"; Value = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") }
         )
         
         $summaryFile = Join-Path $exportDir "Summary_${eventNameSafe}_${timestamp}.csv"
